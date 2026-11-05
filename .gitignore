@@ -7,4 +7,8 @@ __pycache__/
 *.pml
 *.png
 ai_copilot_config.json
+*.cif
+*.pdb
+!pymol_ai_copilot/tests/data/*.pdb
+!pymol_ai_copilot/tests/data/*.cif
 

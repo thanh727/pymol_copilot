@@ -140,13 +140,32 @@ class ContactAnalyzer:
     ) -> Dict[str, Any]:
         """
         Identify polymer residues within cutoff angstroms of target selection.
+        Supports natural keywords like 'ligand' / 'ligands' / 'organic' and auto-resolves generic 'resn lig'.
         """
         def _exec():
-            t_count = self.cmd.count_atoms(target_selection)
+            norm_target = target_selection.strip()
+            # Support common ligand aliases
+            if norm_target.lower() in ("ligand", "ligands"):
+                norm_target = "organic and not solvent"
+            elif norm_target.lower().startswith("resn lig") and self.cmd.count_atoms(norm_target) == 0:
+                # If resn LIG was attempted but doesn't exist, check if organic ligands exist
+                if self.cmd.count_atoms("organic and not solvent") > 0:
+                    norm_target = "organic and not solvent"
+
+            t_count = self.cmd.count_atoms(norm_target)
             if t_count == 0:
+                org_count = self.cmd.count_atoms("organic and not solvent")
+                if org_count > 0:
+                    stored_org = set()
+                    self.cmd.iterate("organic and not solvent", "stored_org.add(resn)", space={"stored_org": stored_org})
+                    raise ValueError(
+                        f"Target selection '{target_selection}' has 0 atoms. "
+                        f"Available organic ligands in session have residue names: {sorted(stored_org)}. "
+                        f"Use 'organic and not solvent' or 'resn <NAME>'."
+                    )
                 raise ValueError(f"Target selection '{target_selection}' has 0 atoms.")
 
-            query = f"byres (({surrounding_scope}) within {cutoff} of ({target_selection})) and not ({target_selection})"
+            query = f"byres (({surrounding_scope}) within {cutoff} of ({norm_target})) and not ({norm_target})"
             atom_count = self.cmd.count_atoms(query)
 
             stored_res = set()
@@ -159,7 +178,8 @@ class ContactAnalyzer:
 
             return {
                 "success": True,
-                "target_selection": target_selection,
+                "target_selection": norm_target,
+                "requested_target": target_selection,
                 "cutoff_angstroms": cutoff,
                 "surrounding_scope": surrounding_scope,
                 "total_atoms": atom_count,

@@ -99,19 +99,32 @@ The persistent, non-modal chat panel will appear without freezing or restarting 
 
 ## 💡 Key Features & Capabilities
 
-### 1. Structure Inspection & Live Session Awareness
+### 1. Structure Loading & Online PDB Fetching
+The agent intelligently distinguishes between remote accessions and local files:
+- **`fetch_structure`**: Downloads structures directly from RCSB PDB using PyMOL's native API (`cif` or `pdb` format). Validates PDB identifiers (e.g. `1UBQ`, `1AKE`) and AlphaFold accessions, prevents unintentional overwriting via auto-disambiguation (`obj_1`), verifies loaded atom counts, and extracts/reports all organic ligands present in the complex.
+- **`load_structure`**: Securely loads local structures (`.pdb`, `.cif`, `.mmcif`, `.mol2`, `.sdf`). Restricts access to approved user directories (blocks system files and traversal), verifies existence, rejects remote URLs, and validates molecular formats.
+
+### 2. Structure Inspection & Live Session Awareness
 The agent automatically inspects the active PyMOL session:
 - Detects loaded molecular objects, total atoms, chains, and bounding boxes.
 - Identifies organic ligands, solvent (water), and inorganic ions.
 - Tracks active selections.
 
-### 2. Autonomous Multi-Step Tool Execution
+### 3. Autonomous Multi-Step Tool Execution & Error Recovery
 The agent can execute multiple tools sequentially to fulfill complex requests.
-- **Example:** Observe context $\rightarrow$ Select binding pocket $\rightarrow$ Show sticks $\rightarrow$ Zoom camera $\rightarrow$ Find polar contact candidates $\rightarrow$ Explain results.
+- **Example:** Fetch 1AKE $\rightarrow$ Inspect organic ligand (AP5) $\rightarrow$ Find residues within 5 Å $\rightarrow$ Highlight in sticks $\rightarrow$ Orient camera $\rightarrow$ Summarize binding site.
+- **Deterministic Loop Prevention:** Maintains a record of failed tool signatures `(tool_name, arguments)`. Immediately catches and rejects repeated invalid calls. Detects non-existent tools as deterministic, non-retryable errors, and early-stops to prevent exhausting the agent step limit.
 - Configurable maximum step threshold (default: 8 steps).
 - Stop button enables immediate safe cancellation.
 
-### 3. Scientific Analysis
+### 4. Bilingual Natural Language Understanding
+Seamlessly interprets user instructions in both **English** and **Vietnamese**:
+- *"Download PDB 1UBQ, display it as cartoon, color by secondary structure, and orient the protein."*
+- *"Tải về cấu trúc 1ubq và hiển thị dạng cartoon."*
+- *"Tải về cấu trúc 1ake và xác định các amino acid trong phạm vi 5 Å xung quanh phối tử."*
+- Responses are synthesized in the user's prompt language.
+
+### 5. Scientific Analysis
 - **Mutation Inspection:** Parses standard notation (e.g., `R132H`, `Arg132His`, `A:R132H`). Verifies whether the residue at that sequence position matches the expected wildtype amino acid. Highlights the local sphere (e.g. 5.0 Å) and computes polar contact candidates.
 - **Contact & Distance Analysis:** Measures inter-atomic distances, classifies pocket residues (hydrophobic, positive, negative, aromatic), and identifies geometric polar contact candidates ($\le 3.5\text{ \AA}$).
   > [!NOTE]
@@ -144,6 +157,13 @@ One-click and natural language presets:
 
 ## 💬 Example Natural-Language Prompts
 
+### Structure Loading & Fetching
+- *"Download PDB 1UBQ, display it as cartoon, color by secondary structure, and orient the protein."*
+- *"Tải về cấu trúc 1ubq và hiển thị dạng cartoon."*
+- *"Download 1AKE and identify residues within 5 angstroms of its ligand."*
+- *"Tải về cấu trúc 1ake và xác định các axit amin trong phạm vi 5 Å của phối tử."*
+- *"Load the PDB file from /path/to/my_structure.pdb and color by chain."*
+
 ### Visualization
 - *"Show the loaded protein as a cartoon, color each chain differently, and set the background to white."*
 - *"Hide all water molecules and show the protein surface with 50% transparency."*
@@ -172,7 +192,7 @@ One-click and natural language presets:
 
 ## 🧪 Testing & Verification
 
-The test suite contains 32 automated unit, mock, and PyMOL integration tests:
+The test suite contains 58 automated unit, mock, and PyMOL integration tests across 8 test suites:
 
 ```bash
 # Run all tests using PyMOL's Python interpreter
@@ -181,11 +201,14 @@ The test suite contains 32 automated unit, mock, and PyMOL integration tests:
 
 ### Verified Test Categories:
 - `test_config.py`: Configuration persistence and path resolving.
-- `test_tool_registry.py`: Whitelist validation, schema extraction, error trapping.
+- `test_tool_registry.py`: Whitelist validation, schema extraction, error trapping (35 registered tools).
 - `test_ollama_client.py`: Ollama REST API parsing (native `tool_calls`, JSON Lines, code blocks).
 - `test_analysis.py`: Mutation string parser, residue translation, contact categories.
 - `test_pymol_integration.py`: Live PyMOL headless (`-qc`) execution of representations, measurements, selections, RMSD, PNG, and PML exports.
 - `test_agent_controller.py`: Autonomous Observe $\rightarrow$ Plan $\rightarrow$ Execute $\rightarrow$ Inspect $\rightarrow$ Finish cycle.
+- `test_regression_phase2.py`: QA regression suite for all Phase 2 defects (insertion codes, negative residue numbers, self-contacts, PML replay).
+- `test_structure_loading_and_loop_prevention.py`: Validation of `fetch_structure`, `load_structure`, security boundaries, disambiguation, loop prevention, and recovery.
+- `test_live_acceptance.py`: End-to-end multi-step validation with real local Ollama models (`qwen2.5-coder:7b` & `gemma4:latest`).
 
 ---
 

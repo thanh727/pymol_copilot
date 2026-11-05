@@ -209,14 +209,58 @@ test_type_error_handling (test_tool_registry.TestToolRegistry.test_type_error_ha
 test_unknown_tool_rejection (test_tool_registry.TestToolRegistry.test_unknown_tool_rejection) ... ok
 
 ----------------------------------------------------------------------
-Ran 40 tests in 0.286s
+Ran 58 tests in 32.408s
 
 OK
 ```
 
 ---
 
-## 7. Remaining Scientific Limitations & Interpretation Caveats
+## 7. Structure Loading & Agent Loop Prevention Validation (Phase 3)
+
+### 7.1. Structure Loading Architecture
+Two dedicated, authorized tools were implemented and added to `GLOBAL_REGISTRY`:
+- **`fetch_structure(pdb_id, object_name=None, format="cif")`**:
+  - Validates 4-character PDB accessions and AlphaFold IDs via regex, rejecting path traversals and invalid characters.
+  - Automatically detects collisions with existing PyMOL objects and safely appends numerical suffixes (`object_1`) to preserve existing session state.
+  - Verifies that downloaded objects exist and contain non-zero atoms.
+  - Automatically identifies organic ligands and non-polymer components, returning them in structured output to assist downstream binding site queries.
+  - Runs with `async_=0` in the thread-safe dispatcher while keeping the PyMOL GUI responsive via Qt `AgentWorker`.
+- **`load_structure(file_path, object_name=None)`**:
+  - Restricts loading to authorized local paths, explicitly rejecting unauthorized system directories (e.g. `/etc/passwd`).
+  - Rejects arbitrary remote URLs, routing online queries to `fetch_structure`.
+  - Supports standard molecular file formats (`.pdb`, `.cif`, `.mmcif`, `.mol2`, `.sdf`).
+
+### 7.2. Permanent Architectural Fix for Agent Error Recovery & Loop Breaker
+In previous iterations, when a model requested an unavailable tool (such as `fetch` or `load`), the agent repeated the identical invalid call and exhausted its maximum 8-step budget.
+This defect was permanently solved in `agent/controller.py`:
+1. **Signature Tracking:** Serializes each call signature `call_sig = f"{tool_name}::{json.dumps(args)}"`.
+2. **Deterministic Unknown-Tool Detection:** Unknown tools are classified as non-retryable errors and immediately recorded into `failed_signatures`.
+3. **Repeated Call Interception:** Before executing any tool call, the controller checks `call_sig in failed_signatures`. If an identical failed call is repeated, execution is rejected with a structured `repeated_failure` response.
+4. **Immediate Early Stopping:** If an identical call is repeated (`step_has_repeated = True`) or two consecutive failed calls occur without an alternative strategy (`consecutive_repeated_failures >= 2`), the execution loop breaks immediately rather than burning through the remaining step limit.
+5. **Recovery Preservation:** If the agent tries an alternative authorized tool or recovers with valid parameters, execution continues successfully.
+
+### 7.3. Live Acceptance Test Results (Ollama with `qwen2.5-coder:7b` & `gemma4:latest`)
+All three required live user scenarios were validated in PyMOL with live Ollama inference:
+
+1. **Scenario 1 (1UBQ Styling):**
+   - *Prompt:* `"Download PDB 1UBQ, display it as cartoon, color by secondary structure, and orient the protein."`
+   - *Model:* `qwen2.5-coder:7b` & `gemma4:latest`
+   - *Outcome:* `fetch_structure(pdb_id="1ubq")` called first $\rightarrow$ 660 atoms loaded into object `1ubq` $\rightarrow$ `show_representation(cartoon)` $\rightarrow$ `color_selection(secondary_structure)` $\rightarrow$ `orient_selection()` $\rightarrow$ Completed in $\le 3$ steps. $\rightarrow$ **PASSED**
+
+2. **Scenario 2 (1AKE Dependent Ligand Binding Site):**
+   - *Prompt:* `"Download 1AKE and identify residues within 5 angstroms of its ligand."`
+   - *Model:* `qwen2.5-coder:7b`
+   - *Outcome:* `fetch_structure(pdb_id="1ake")` called first $\rightarrow$ 3804 atoms loaded, ligand `AP5` detected $\rightarrow$ `find_nearby_residues` identified binding site residues around AP5 $\rightarrow$ `highlight_residues(sticks)` $\rightarrow$ `label_residues` $\rightarrow$ `orient_selection()` $\rightarrow$ Accurate scientific summary generated. $\rightarrow$ **PASSED**
+
+3. **Scenario 3 (Vietnamese Natural Language):**
+   - *Prompt:* `"Tải về cấu trúc 1ubq và hiển thị dạng cartoon."`
+   - *Model:* `qwen2.5-coder:7b`
+   - *Outcome:* Correctly translated intent to `fetch_structure` and `show_representation(cartoon)` $\rightarrow$ Object loaded and rendered $\rightarrow$ Response returned in Vietnamese. $\rightarrow$ **PASSED**
+
+---
+
+## 8. Remaining Scientific Limitations & Interpretation Caveats
 
 1. **Distance-Based Polar Contacts vs True Hydrogen Bonds:**
    - Contacts identified by `find_polar_contact_candidates` are geometric distance approximations ($\le 3.5\text{ \AA}$ between nitrogen and oxygen atoms). They do not evaluate protonation states, hydrogen atom positions, or donor-hydrogen-acceptor angles. They must not be described as experimentally confirmed hydrogen bonds.
@@ -229,7 +273,7 @@ OK
 
 ---
 
-## 8. Conclusion and Sign-Off
+## 9. Conclusion and Sign-Off
 
 The **PyMOL AI Copilot** plugin has satisfied all Phase 2 quality assurance and scientific validation criteria. The architecture is thread-safe, robust against model variations and edge cases, reproducible across PML and PSE exports, and numerically verified against independent mathematical reference standards.
 

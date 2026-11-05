@@ -31,6 +31,30 @@ GLOBAL_CONTEXT = ToolContext()
 
 
 # ============================================================================
+# Structure Loading Tools
+# ============================================================================
+
+def tool_fetch_structure(pdb_id: str, object_name: Optional[str] = None, format: str = "cif") -> Dict[str, Any]:
+    """Download and load a structure from the Protein Data Bank (PDB)."""
+    try:
+        res = GLOBAL_CONTEXT.executor.fetch_structure(pdb_id, object_name, format)
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_load_structure(file_path: str, object_name: Optional[str] = None) -> Dict[str, Any]:
+    """Load a molecular structure from a local file (e.g. .pdb, .cif, .mol2)."""
+    try:
+        res = GLOBAL_CONTEXT.executor.load_structure(file_path, object_name)
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================================
 # A. Structure Inspection Tools
 # ============================================================================
 

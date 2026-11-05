@@ -75,6 +75,52 @@ class ToolRegistry:
             }
 
     def _register_all_tools(self):
+        # Structure Loading Tools
+        self.register(ToolDefinition(
+            name="fetch_structure",
+            description="Download and load a molecular structure directly from the Protein Data Bank (PDB) into PyMOL. Use this when the user asks to download, fetch, or open a structure by its PDB ID (e.g. '1ubq', '1ake', '4hhb') or AlphaFold accession.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "pdb_id": {
+                        "type": "string",
+                        "description": "Standard 4-character PDB accession ID (e.g. '1ubq', '1ake') or AlphaFold accession code."
+                    },
+                    "object_name": {
+                        "type": "string",
+                        "description": "Optional custom name for the loaded object. If omitted, defaults to the lowercase PDB ID."
+                    },
+                    "format": {
+                        "type": "string",
+                        "description": "File format: 'cif' (default, modern mmCIF) or 'pdb'.",
+                        "enum": ["cif", "pdb"]
+                    }
+                },
+                "required": ["pdb_id"]
+            },
+            func=tools.tool_fetch_structure
+        ))
+
+        self.register(ToolDefinition(
+            name="load_structure",
+            description="Load a molecular structure from a local filesystem path (PDB, mmCIF, mol2, sdf) into PyMOL. Use this when the user specifies an existing local file.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Local file path to the molecular structure file."
+                    },
+                    "object_name": {
+                        "type": "string",
+                        "description": "Optional name for the loaded PyMOL object. If omitted, defaults to the filename without extension."
+                    }
+                },
+                "required": ["file_path"]
+            },
+            func=tools.tool_load_structure
+        ))
+
         # A. Structure Inspection
         self.register(ToolDefinition(
             name="list_objects",
@@ -431,11 +477,11 @@ class ToolRegistry:
 
         self.register(ToolDefinition(
             name="find_nearby_residues",
-            description="Find all polymer residues within cutoff angstroms of a target selection (e.g. ligand, active site residue).",
+            description="Find all polymer residues within cutoff angstroms of a target selection (e.g. 'organic', 'resn AP5', 'resi 50').",
             parameters={
                 "type": "object",
                 "properties": {
-                    "target_selection": {"type": "string", "description": "Target selection."},
+                    "target_selection": {"type": "string", "description": "Target selection expression (e.g. 'organic', 'resn AP5', 'chain A and resi 100')."},
                     "cutoff": {"type": "number", "description": "Distance radius in angstroms (default 5.0)."},
                     "surrounding_scope": {"type": "string", "description": "Scope of surrounding search (default 'polymer')."}
                 },

@@ -119,9 +119,15 @@ class AgentController:
         final_answer = ""
         total_start_time = time.time()
 
+        # Track failed tool signatures to prevent infinite retry loops
+        failed_signatures: set = set()
+        consecutive_repeated_failures = 0
+        early_stopped_due_to_loop = False
+
         for step_idx in range(1, steps_limit + 1):
-            if self._cancelled:
-                final_answer = "Execution was cancelled by the user."
+            if self._cancelled or early_stopped_due_to_loop:
+                if self._cancelled:
+                    final_answer = "Execution was cancelled by the user."
                 break
 
             step = AgentStep(step_idx)
@@ -190,13 +196,23 @@ class AgentController:
                 ]
             })
 
+            step_has_repeated = False
             for tc in tool_calls:
                 if self._cancelled:
                     break
 
                 t_name = tc["name"]
                 t_args = tc.get("arguments", {})
+                if not isinstance(t_args, dict):
+                    t_args = {}
                 t_id = tc.get("id", f"call_{t_name}")
+
+                # Serialize tool call signature for failure tracking
+                try:
+                    args_sig = json.dumps(t_args, sort_keys=True)
+                except Exception:
+                    args_sig = str(t_args)
+                call_sig = f"{t_name}::{args_sig}"
 
                 if step_callback:
                     step_callback({
@@ -206,8 +222,44 @@ class AgentController:
                         "arguments": t_args
                     })
 
-                # Execute tool
-                tool_res = self.registry.execute(t_name, t_args)
+                # Check if this exact call signature previously failed
+                if call_sig in failed_signatures:
+                    # Detect and block repeating an identical failed tool call
+                    step_has_repeated = True
+                    consecutive_repeated_failures += 1
+                    tool_res = {
+                        "success": False,
+                        "error": (
+                            f"Execution rejected: Tool call '{t_name}' with arguments {args_sig} "
+                            f"already failed in a previous step. Repeating identical failed calls is disallowed. "
+                            f"Choose an alternative valid strategy from the authorized tools or report the limitation."
+                        ),
+                        "repeated_failure": True
+                    }
+                else:
+                    # Validate tool presence in authorized registry
+                    tool_def = self.registry.get(t_name)
+                    if tool_def is None:
+                        # Non-existent or unauthorized tool call
+                        auth_tools = [t.name for t in self.registry.list_tools()]
+                        tool_res = {
+                            "success": False,
+                            "error": (
+                                f"Tool '{t_name}' is not in the authorized tool registry. "
+                                f"This is a non-retryable error. Do not call '{t_name}' again. "
+                                f"Available authorized tools: {auth_tools}"
+                            ),
+                            "non_retryable": True
+                        }
+                        failed_signatures.add(call_sig)
+                    else:
+                        # Execute tool via registry
+                        tool_res = self.registry.execute(t_name, t_args)
+                        if not tool_res.get("success", False):
+                            failed_signatures.add(call_sig)
+                        else:
+                            consecutive_repeated_failures = 0  # Reset on successful execution
+
                 step.tool_results.append({
                     "tool": t_name,
                     "arguments": t_args,
@@ -232,12 +284,24 @@ class AgentController:
 
             executed_steps.append(step)
 
+            # Check if agent is trapped in an unrecoverable failure loop
+            if step_has_repeated or consecutive_repeated_failures >= 2:
+                early_stopped_due_to_loop = True
+                break
+
         # If max steps reached without final answer, do one final synthesis call
         if not final_answer and not self._cancelled:
-            synthesis_prompt = (
-                "You have completed your tool execution steps. Please provide a clear, concise scientific summary "
-                "of the actions performed, structural findings, and visual updates now visible in PyMOL."
-            )
+            if early_stopped_due_to_loop:
+                synthesis_prompt = (
+                    "Execution stopped early because an invalid or failed tool call was repeated without a valid alternative strategy. "
+                    "Please provide a helpful, concise response explaining what was attempted, what was invalid, "
+                    "and guide the user on how to accomplish the task using authorized tools (e.g. fetch_structure or load_structure)."
+                )
+            else:
+                synthesis_prompt = (
+                    "You have completed your tool execution steps. Please provide a clear, concise scientific summary "
+                    "of the actions performed, structural findings, and visual updates now visible in PyMOL."
+                )
             messages.append({"role": "user", "content": synthesis_prompt})
             try:
                 synth_resp = self.client.chat(

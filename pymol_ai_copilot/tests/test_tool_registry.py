@@ -16,6 +16,7 @@ class TestToolRegistry(unittest.TestCase):
 
     def test_expected_tools_present(self):
         expected = [
+            "fetch_structure", "load_structure",
             "list_objects", "get_object_info", "get_chains", "get_residues",
             "count_atoms", "get_structure_summary", "show_representation",
             "hide_representation", "color_selection", "select_residues",
