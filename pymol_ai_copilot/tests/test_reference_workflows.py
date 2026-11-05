@@ -330,41 +330,155 @@ class TestReferenceWorkflows(unittest.TestCase):
         self.assertEqual(rec.scientific_measurements["chains"], ["A"])
 
     def test_deterministic_wf03_comparison_and_independent_rmsd(self):
-        """WF03: Execute deterministic structure comparison and independently verify Kabsch RMSD."""
+        """WF03: Execute deterministic structure comparison on Chain A and independently verify Kabsch RMSD."""
         wf = GLOBAL_WORKFLOW_REGISTRY.get("WF03")
         self.assertIsNotNone(wf)
         data_dir = os.path.join(os.path.dirname(__file__), "data")
         cmd.load(os.path.join(data_dir, "1ake.pdb"), "det_1ake")
         cmd.load(os.path.join(data_dir, "4ake.pdb"), "det_4ake")
 
+        # Automatically detects multi-chain structures and defaults to single-chain comparison (Chain A)
         rec = wf.execute_deterministic({"mobile": "det_1ake", "target": "det_4ake", "method": "align"})
         self.assertEqual(rec.state, WorkflowState.COMPLETED)
         self.assertTrue(rec.validation_gates_passed)
-        self.assertGreater(rec.scientific_measurements["aligned_atoms"], 0)
-        reported_rmsd = rec.scientific_measurements["rmsd_angstrom"]
-        self.assertGreater(reported_rmsd, 0.0)
+        meas = rec.scientific_measurements
+        self.assertEqual(meas["comparison_scope"], "single_chain")
+        self.assertEqual(meas["mobile_chain"], "A")
+        self.assertEqual(meas["target_chain"], "A")
+        self.assertIsNone(meas["scientific_warning"])
 
-        # Independent Kabsch RMSD verification on CA coordinates using NumPy SVD
+        reported_global_rmsd = meas["rmsd_global_ca"]
+        reported_core_rmsd = meas["rmsd_refined_core"]
+        # Global open vs closed C-alpha RMSD for adenylate kinase monomer is 7.13 Å (literature benchmark: ~7-8 Å)
+        self.assertAlmostEqual(reported_global_rmsd, 7.1307, delta=0.05)
+        # Refined core C-alpha RMSD is ~2.07 Å
+        self.assertAlmostEqual(reported_core_rmsd, 2.0691, delta=0.05)
+
+        # Independent Kabsch RMSD verification on sequence-verified Chain A CA coordinates using NumPy SVD
         c1, c2 = [], []
-        cmd.iterate_state(1, "det_1ake and name CA", "c1.append([x, y, z])", space={"c1": c1})
-        cmd.iterate_state(1, "det_4ake and name CA", "c2.append([x, y, z])", space={"c2": c2})
-        n_atoms = min(len(c1), len(c2))
-        p = np.array(c1[:n_atoms], dtype=float)
-        q = np.array(c2[:n_atoms], dtype=float)
+        cmd.iterate_state(1, "det_1ake and chain A and name CA", "c1.append([x, y, z])", space={"c1": c1})
+        cmd.iterate_state(1, "det_4ake and chain A and name CA", "c2.append([x, y, z])", space={"c2": c2})
+        self.assertEqual(len(c1), 214)
+        self.assertEqual(len(c2), 214)
+        p = np.array(c1, dtype=float)
+        q = np.array(c2, dtype=float)
 
         p_c = p - np.mean(p, axis=0)
         q_c = q - np.mean(q, axis=0)
         H = p_c.T @ q_c
         U, S, Vt = np.linalg.svd(H)
-        R = Vt.T @ U.T
-        if np.linalg.det(R) < 0:
-            Vt[-1, :] *= -1
-            R = Vt.T @ U.T
-        p_aligned = p_c @ R
+        V = Vt.T
+        d = np.sign(np.linalg.det(V @ U.T))
+        R = V @ np.diag([1, 1, d]) @ U.T
+        p_aligned = (R @ p_c.T).T
         kabsch_rmsd = float(np.sqrt(np.mean(np.sum((p_aligned - q_c) ** 2, axis=-1))))
 
-        # Verify that reported RMSD matches independent Kabsch calculation within numerical tolerance
-        self.assertAlmostEqual(reported_rmsd, kabsch_rmsd, delta=0.1)
+        # Verify that reported global RMSD matches independent Kabsch calculation to < 0.001 Å
+        self.assertAlmostEqual(reported_global_rmsd, kabsch_rmsd, delta=0.001)
+
+    def test_deterministic_wf03_chain_b_comparison(self):
+        """WF03: Compare Chain B vs Chain B explicitly and verify global Ca RMSD is ~6.90 Å."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF03")
+        self.assertIsNotNone(wf)
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        cmd.load(os.path.join(data_dir, "1ake.pdb"), "det_1ake_b")
+        cmd.load(os.path.join(data_dir, "4ake.pdb"), "det_4ake_b")
+
+        rec = wf.execute_deterministic({"mobile": "det_1ake_b", "target": "det_4ake_b", "chain": "B"})
+        self.assertEqual(rec.state, WorkflowState.COMPLETED)
+        meas = rec.scientific_measurements
+        self.assertEqual(meas["comparison_scope"], "single_chain")
+        self.assertEqual(meas["mobile_chain"], "B")
+        self.assertEqual(meas["target_chain"], "B")
+        self.assertAlmostEqual(meas["rmsd_global_ca"], 6.8980, delta=0.05)
+
+        # Independent NumPy Kabsch SVD on Chain B
+        c1, c2 = [], []
+        cmd.iterate_state(1, "det_1ake_b and chain B and name CA", "c1.append([x, y, z])", space={"c1": c1})
+        cmd.iterate_state(1, "det_4ake_b and chain B and name CA", "c2.append([x, y, z])", space={"c2": c2})
+        p = np.array(c1, dtype=float)
+        q = np.array(c2, dtype=float)
+        p_c = p - np.mean(p, axis=0)
+        q_c = q - np.mean(q, axis=0)
+        H = p_c.T @ q_c
+        U, S, Vt = np.linalg.svd(H)
+        V = Vt.T
+        d = np.sign(np.linalg.det(V @ U.T))
+        R = V @ np.diag([1, 1, d]) @ U.T
+        p_aligned = (R @ p_c.T).T
+        kabsch_rmsd = float(np.sqrt(np.mean(np.sum((p_aligned - q_c) ** 2, axis=-1))))
+        self.assertAlmostEqual(meas["rmsd_global_ca"], kabsch_rmsd, delta=0.001)
+
+    def test_deterministic_wf03_multichain_asymmetric_unit_caveat(self):
+        """WF03: Multichain comparison across crystal asymmetric unit triggers quaternary packing warning."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF03")
+        self.assertIsNotNone(wf)
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        cmd.load(os.path.join(data_dir, "1ake.pdb"), "det_1ake_m")
+        cmd.load(os.path.join(data_dir, "4ake.pdb"), "det_4ake_m")
+
+        # Explicitly request multichain alignment across the entire two-chain asymmetric unit
+        rec = wf.execute_deterministic({"mobile": "det_1ake_m", "target": "det_4ake_m", "scope": "multichain"})
+        self.assertEqual(rec.state, WorkflowState.COMPLETED)
+        meas = rec.scientific_measurements
+        self.assertEqual(meas["comparison_scope"], "multichain")
+        self.assertAlmostEqual(meas["rmsd_global_ca"], 18.4487, delta=0.05)
+
+        # Verify that the scientific warning is triggered and recorded
+        self.assertIsNotNone(meas["scientific_warning"])
+        self.assertIn("Multichain Asymmetric Unit Caveat", meas["scientific_warning"])
+        self.assertTrue(any("Multichain Asymmetric Unit Caveat" in c for c in rec.scientific_caveats))
+
+    def test_deterministic_wf03_methods_comparison(self):
+        """WF03: Compare align, super, and cealign on Chain A and verify consistency."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF03")
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        cmd.load(os.path.join(data_dir, "1ake.pdb"), "m_1ake")
+        cmd.load(os.path.join(data_dir, "4ake.pdb"), "m_4ake")
+
+        rec_align = wf.execute_deterministic({"mobile": "m_1ake", "target": "m_4ake", "chain": "A", "method": "align"})
+        rec_super = wf.execute_deterministic({"mobile": "m_1ake", "target": "m_4ake", "chain": "A", "method": "super"})
+        rec_ce = wf.execute_deterministic({"mobile": "m_1ake", "target": "m_4ake", "chain": "A", "method": "cealign"})
+
+        self.assertEqual(rec_align.state, WorkflowState.COMPLETED)
+        self.assertEqual(rec_super.state, WorkflowState.COMPLETED)
+        self.assertEqual(rec_ce.state, WorkflowState.COMPLETED)
+
+        # align and super should produce identical unrefined global Ca RMSD on identical sequence (7.13 Å)
+        self.assertAlmostEqual(rec_align.scientific_measurements["rmsd_global_ca"], 7.1307, delta=0.05)
+        self.assertAlmostEqual(rec_super.scientific_measurements["rmsd_global_ca"], 7.1307, delta=0.05)
+        # cealign reports rigid core alignment (~3.46 Å across ~112 residues)
+        self.assertAlmostEqual(rec_ce.scientific_measurements["rmsd_angstrom"], 3.46, delta=0.1)
+
+    def test_wf03_regression_chain_validation(self):
+        """WF03 Regression: Handle nonexistent chain selection gracefully and verify raw alignment correspondence."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF03")
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        cmd.load(os.path.join(data_dir, "1ake.pdb"), "reg_1ake")
+        cmd.load(os.path.join(data_dir, "4ake.pdb"), "reg_4ake")
+
+        # Nonexistent chain "Z" should fail with descriptive error
+        rec_bad_chain = wf.execute_deterministic({
+            "mobile": "reg_1ake",
+            "target": "reg_4ake",
+            "mobile_chain": "Z",
+            "target_chain": "Z"
+        })
+        self.assertEqual(rec_bad_chain.state, WorkflowState.FAILED)
+        self.assertIn("does not exist", rec_bad_chain.error)
+
+        # Raw alignment verification: verify atom correspondence is 1-to-1 without index mismatch
+        res_align = GLOBAL_CAPABILITY_REGISTRY.execute("align_structures", {
+            "mobile": "reg_1ake",
+            "target": "reg_4ake",
+            "mobile_chain": "A",
+            "target_chain": "A",
+            "cycles": 0
+        })
+        self.assertTrue(res_align["success"])
+        self.assertEqual(res_align["aligned_ca_atoms"], 214)
+        self.assertEqual(res_align["matched_residues"], 214)
+        self.assertAlmostEqual(res_align["rmsd_global_ca"], 7.1307, delta=0.001)
 
     def test_deterministic_wf04_mutation_arg42_contacts_and_scientific_validation(self):
         """WF04: Analyze Arg42 in 1UBQ, validate distance-based contacts against independent NumPy calculations."""

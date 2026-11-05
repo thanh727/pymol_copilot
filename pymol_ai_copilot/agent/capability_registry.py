@@ -1074,7 +1074,7 @@ class CapabilityRegistry:
             name="align_structures",
             api_mapping="cmd.align / super / cealign",
             category="08 Structure alignment",
-            description="Superimpose mobile structure onto target reference and calculate RMSD. Methods: 'align', 'super', 'cealign'.",
+            description="Superimpose mobile structure onto target reference and calculate RMSD. Methods: 'align', 'super', 'cealign'. Supports explicit chain scoping.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -1082,7 +1082,9 @@ class CapabilityRegistry:
                     "target": {"type": "string", "description": "Name of reference structure."},
                     "method": {"type": "string", "description": "Method: 'align', 'super', 'cealign'.", "enum": ["align", "super", "cealign"]},
                     "cutoff": {"type": "number", "description": "Outlier rejection cutoff in angstroms (default 2.0)."},
-                    "cycles": {"type": "integer", "description": "Max refinement cycles (default 5)."}
+                    "cycles": {"type": "integer", "description": "Max refinement cycles (default 5)."},
+                    "mobile_chain": {"type": "string", "description": "Optional specific chain for mobile structure (e.g. 'A')."},
+                    "target_chain": {"type": "string", "description": "Optional specific chain for target reference structure (e.g. 'A')."}
                 },
                 "required": ["mobile", "target"]
             },
@@ -1101,14 +1103,16 @@ class CapabilityRegistry:
             name="calculate_rmsd",
             api_mapping="cmd.rms_cur / cmd.align",
             category="08 Structure alignment",
-            description="Calculate RMSD between two selections with explicit atom filtering ('CA', 'backbone', or 'all').",
+            description="Calculate RMSD between two selections with explicit atom filtering ('CA', 'backbone', or 'all') and optional chain filtering.",
             parameters={
                 "type": "object",
                 "properties": {
                     "mobile_selection": {"type": "string", "description": "Mobile selection."},
                     "target_selection": {"type": "string", "description": "Target selection."},
                     "atom_type": {"type": "string", "description": "Atom filter: 'CA', 'backbone', 'all'.", "enum": ["CA", "backbone", "all"]},
-                    "align_first": {"type": "boolean", "description": "Whether to superimpose before calculating RMSD (default false)."}
+                    "align_first": {"type": "boolean", "description": "Whether to superimpose before calculating RMSD (default false)."},
+                    "mobile_chain": {"type": "string", "description": "Optional specific chain for mobile selection."},
+                    "target_chain": {"type": "string", "description": "Optional specific chain for target selection."}
                 },
                 "required": ["mobile_selection", "target_selection"]
             },

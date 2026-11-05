@@ -2,7 +2,7 @@
 
 **Date:** November 2026  
 **Environment:** PyMOL 3.1.0 Open-Source (Homebrew `arm64`), Python 3.14.3, macOS 27.2, Ollama (`qwen2.5-coder:7b`, `gemma4:latest`)  
-**Baseline:** 521 cataloged PyMOL API/PML functions | 35 authorized, typed tools | 5 verified deterministic reference workflows | 85 automated tests passing (100% pass rate)  
+**Baseline:** 521 cataloged PyMOL API/PML functions | 35 authorized, typed tools | 5 verified deterministic reference workflows | 89 automated tests passing (100% pass rate)  
 
 ---
 
@@ -58,12 +58,15 @@ The following five reference workflows are fully implemented, tested in headless
 - **Precondition Gates:** Requires $\ge 2$ distinct loaded molecular objects.
 - **Deterministic Steps:**
   1. Resolve mobile and target structures.
-  2. Select alignment algorithm: `align` (sequence-informed refinement), `super` (structural superposition), or `cealign` (combinatorial extension).
-  3. Superimpose mobile onto target with outlier rejection cycles ($2.0\text{ \AA}$ cutoff, 5 cycles).
-  4. Measure strict unrefined coordinate $C\alpha$ RMSD.
-  5. Identify divergent residue positions ($> 1.5\text{ \AA}$ displacement).
-  6. Color structures distinctly and export structured analysis to JSON.
-- **Postcondition Gates:** Floating-point RMSD value calculated; aligned atom count $> 0$.
+  2. Inspect chain topologies via `get_chains`. If multichain objects are detected without an explicit scope directive, automatically default to corresponding single chains (e.g. Chain A vs Chain A) to prevent asymmetric unit crystal packing inflation.
+  3. Validate requested chains; halt with descriptive `WorkflowState.FAILED` if a requested chain does not exist.
+  4. Select alignment algorithm: `align` (sequence-informed refinement), `super` (structural superposition), or `cealign` (combinatorial extension).
+  5. Superimpose mobile onto target with outlier rejection cycles ($2.0\text{ \AA}$ cutoff, 5 cycles).
+  6. Measure both refined core RMSD and strict unrefined coordinate $C\alpha$ RMSD (`cycles=0`), as well as matched residue counts from raw 1-to-1 atom correspondences.
+  7. Run multichain anomaly detector: if multichain comparison yields RMSD $> 12.0\text{ \AA}$, trigger explicit scientific packing caveat.
+  8. Identify divergent residue positions ($> 1.5\text{ \AA}$ displacement).
+  9. Color structures distinctly and export structured analysis to JSON.
+- **Postcondition Gates:** Floating-point RMSD value calculated; aligned atom count $> 0$; chain validity confirmed.
 
 #### WF04 — Mutation Neighborhood Analysis
 - **Intent Recognition:** Regex pattern `\b(?:chain\s+([A-Za-z0-9])\s*:?\s*)?([A-Z][a-z]{0,2})[-_: ]?(\d+)[-_: ]?([A-Z][a-z]{0,2})\b`.

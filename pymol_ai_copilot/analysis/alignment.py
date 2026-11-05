@@ -19,6 +19,21 @@ class StructureAligner:
     def cmd(self):
         return self.executor.cmd
 
+    def _count_matched_residues(self, aln_obj: str, mob_sel: str, mobile: str) -> int:
+        """Count unique residues present in a PyMOL alignment object."""
+        try:
+            raw_aln = self.cmd.get_raw_alignment(aln_obj)
+            idx_to_resi = {}
+            self.cmd.iterate(mob_sel, "idx_to_resi[index] = (resi, chain)", space={"idx_to_resi": idx_to_resi})
+            matched_resis = set()
+            for p1, p2 in raw_aln:
+                for model, idx in (p1, p2):
+                    if model == mobile and idx in idx_to_resi:
+                        matched_resis.add(idx_to_resi[idx])
+            return len(matched_resis)
+        except Exception:
+            return 0
+
     def align_structures(
         self,
         mobile: str,
@@ -27,7 +42,9 @@ class StructureAligner:
         target_selection: str = "",
         method: str = "align",
         cutoff: float = 2.0,
-        cycles: int = 5
+        cycles: int = 5,
+        mobile_chain: str = "",
+        target_chain: str = ""
     ) -> Dict[str, Any]:
         """
         Align mobile structure onto target structure using PyMOL's align, super, or cealign.
@@ -40,10 +57,23 @@ class StructureAligner:
             method: 'align' (sequence-guided + outlier rejection), 'super' (sequence-independent), or 'cealign' (combinatorial extension).
             cutoff: Outlier rejection distance in angstroms.
             cycles: Maximum refinement cycles.
+            mobile_chain: Optional specific chain for mobile structure (e.g. 'A').
+            target_chain: Optional specific chain for target reference structure (e.g. 'A').
         """
         def _exec():
-            mob_sel = f"({mobile})" + (f" and ({mobile_selection})" if mobile_selection else "")
-            tgt_sel = f"({target})" + (f" and ({target_selection})" if target_selection else "")
+            mob_parts = [f"model {mobile}"]
+            if mobile_chain:
+                mob_parts.append(f"chain '{mobile_chain}'")
+            if mobile_selection:
+                mob_parts.append(f"({mobile_selection})")
+            mob_sel = " and ".join(mob_parts)
+
+            tgt_parts = [f"model {target}"]
+            if target_chain:
+                tgt_parts.append(f"chain '{target_chain}'")
+            if target_selection:
+                tgt_parts.append(f"({target_selection})")
+            tgt_sel = " and ".join(tgt_parts)
 
             # Verify objects exist
             all_names = self.cmd.get_names("all")
@@ -54,50 +84,93 @@ class StructureAligner:
 
             m = method.lower().strip()
             if m == "align":
-                res = self.cmd.align(mob_sel, tgt_sel, cutoff=float(cutoff), cycles=int(cycles))
+                aln_obj = f"_aln_{mobile}_{target}"
+                res = self.cmd.align(mob_sel, tgt_sel, cutoff=float(cutoff), cycles=int(cycles), object=aln_obj)
                 # res returns: (rmsd, atoms_aligned, cycles, rmsd_raw, n_atoms)
-                rmsd = round(float(res[0]), 3)
+                rmsd_refined = round(float(res[0]), 4)
                 atoms_aligned = int(res[1])
                 cycles_run = int(res[2])
-                rmsd_raw = round(float(res[3]), 3) if len(res) > 3 else rmsd
+                rmsd_raw = round(float(res[3]), 4) if len(res) > 3 else rmsd_refined
                 total_atoms = int(res[4]) if len(res) > 4 else atoms_aligned
+
+                matched_residues = self._count_matched_residues(aln_obj, mob_sel, mobile)
+                self.cmd.delete(aln_obj)
+
+                # Compute unrefined global Ca RMSD (cycles=0) for transparent reporting
+                res_ca = self.cmd.align(f"({mob_sel}) and name CA", f"({tgt_sel}) and name CA", cycles=0)
+                rmsd_global_ca = round(float(res_ca[0]), 4)
+                aligned_ca_count = int(res_ca[1])
+
                 return {
                     "method": "align (sequence-guided structural refinement)",
                     "mobile": mobile,
                     "target": target,
-                    "rmsd": rmsd,
+                    "mobile_chain": mobile_chain or "all",
+                    "target_chain": target_chain or "all",
+                    "rmsd": rmsd_refined,
+                    "rmsd_refined_core": rmsd_refined,
+                    "rmsd_global_ca": rmsd_global_ca,
                     "rmsd_units": "Å",
                     "aligned_atoms": atoms_aligned,
                     "total_initial_atoms": total_atoms,
+                    "aligned_ca_atoms": aligned_ca_count,
+                    "matched_residues": matched_residues or aligned_ca_count,
                     "cycles": cycles_run,
                     "rmsd_raw": rmsd_raw,
                     "cutoff_applied": cutoff
                 }
             elif m == "super":
-                res = self.cmd.super(mob_sel, tgt_sel, cutoff=float(cutoff), cycles=int(cycles))
-                rmsd = round(float(res[0]), 3)
+                aln_obj = f"_sup_{mobile}_{target}"
+                res = self.cmd.super(mob_sel, tgt_sel, cutoff=float(cutoff), cycles=int(cycles), object=aln_obj)
+                rmsd_refined = round(float(res[0]), 4)
                 atoms_aligned = int(res[1])
                 cycles_run = int(res[2])
+                rmsd_raw = round(float(res[3]), 4) if len(res) > 3 else rmsd_refined
+                total_atoms = int(res[4]) if len(res) > 4 else atoms_aligned
+
+                matched_residues = self._count_matched_residues(aln_obj, mob_sel, mobile)
+                self.cmd.delete(aln_obj)
+
+                res_ca = self.cmd.super(f"({mob_sel}) and name CA", f"({tgt_sel}) and name CA", cycles=0)
+                rmsd_global_ca = round(float(res_ca[0]), 4)
+                aligned_ca_count = int(res_ca[1])
+
                 return {
                     "method": "super (sequence-independent structural superposition)",
                     "mobile": mobile,
                     "target": target,
-                    "rmsd": rmsd,
+                    "mobile_chain": mobile_chain or "all",
+                    "target_chain": target_chain or "all",
+                    "rmsd": rmsd_refined,
+                    "rmsd_refined_core": rmsd_refined,
+                    "rmsd_global_ca": rmsd_global_ca,
                     "rmsd_units": "Å",
                     "aligned_atoms": atoms_aligned,
+                    "total_initial_atoms": total_atoms,
+                    "aligned_ca_atoms": aligned_ca_count,
+                    "matched_residues": matched_residues or aligned_ca_count,
                     "cycles": cycles_run,
+                    "rmsd_raw": rmsd_raw,
                     "cutoff_applied": cutoff
                 }
             elif m == "cealign":
                 res = self.cmd.cealign(tgt_sel, mob_sel)
                 # cealign returns dict with 'RMSD', 'alignment_length'
+                rmsd_ce = round(float(res.get("RMSD", 0.0)), 4)
+                aln_len = int(res.get("alignment_length", 0))
                 return {
                     "method": "cealign (combinatorial extension)",
                     "mobile": mobile,
                     "target": target,
-                    "rmsd": round(float(res.get("RMSD", 0.0)), 3),
+                    "mobile_chain": mobile_chain or "all",
+                    "target_chain": target_chain or "all",
+                    "rmsd": rmsd_ce,
+                    "rmsd_refined_core": rmsd_ce,
+                    "rmsd_global_ca": rmsd_ce,
                     "rmsd_units": "Å",
-                    "alignment_length": int(res.get("alignment_length", 0))
+                    "aligned_atoms": aln_len,
+                    "alignment_length": aln_len,
+                    "matched_residues": aln_len
                 }
             else:
                 raise ValueError(f"Unknown alignment method: '{method}'. Choose 'align', 'super', or 'cealign'.")
@@ -112,7 +185,9 @@ class StructureAligner:
         mobile_selection: str,
         target_selection: str,
         atom_type: str = "CA",
-        align_first: bool = False
+        align_first: bool = False,
+        mobile_chain: str = "",
+        target_chain: str = ""
     ) -> Dict[str, Any]:
         """
         Calculate RMSD between two selections.
@@ -122,10 +197,17 @@ class StructureAligner:
             target_selection: Target atom selection.
             atom_type: 'CA', 'backbone', or 'all'
             align_first: If True, superimpose first; if False, measure current in-place coordinate RMSD.
+            mobile_chain: Optional specific chain filter for mobile selection.
+            target_chain: Optional specific chain filter for target selection.
         """
         def _exec():
             mob = mobile_selection
             tgt = target_selection
+
+            if mobile_chain:
+                mob = f"({mob}) and chain '{mobile_chain}'"
+            if target_chain:
+                tgt = f"({tgt}) and chain '{target_chain}'"
 
             if atom_type.upper() == "CA":
                 mob = f"({mob}) and name CA"
@@ -154,7 +236,7 @@ class StructureAligner:
                 mode = "in-place coordinate RMSD"
 
             return {
-                "rmsd": round(rmsd_val, 3),
+                "rmsd": round(rmsd_val, 4),
                 "units": "Å",
                 "atom_filter": atom_type,
                 "atoms_compared": atoms,
@@ -218,10 +300,15 @@ class StructureAligner:
 
             deviations = []
             import math
+            max_dist = 0.0
+            all_dists = []
             for r in common_resi:
                 c1 = map1[r]["coord"]
                 c2 = map2[r]["coord"]
                 dist = math.sqrt(sum((c1[i] - c2[i])**2 for i in range(3)))
+                all_dists.append(dist)
+                if dist > max_dist:
+                    max_dist = dist
                 resn1 = map1[r]["resn"]
                 resn2 = map2[r]["resn"]
                 if dist >= deviation_threshold:
@@ -240,7 +327,9 @@ class StructureAligner:
                 "compared_residues": len(common_resi),
                 "threshold_angstroms": deviation_threshold,
                 "deviating_residues_count": len(deviations),
-                "deviating_regions": deviations[:20]  # First 20 to avoid giant prompt
+                "deviating_regions": deviations[:20],  # First 20 to avoid giant prompt
+                "max_displacement": round(max_dist, 3),
+                "average_displacement": round(sum(all_dists) / len(all_dists), 3) if all_dists else 0.0
             }
 
         return self.executor.run_safe(_exec)

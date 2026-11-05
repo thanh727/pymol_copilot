@@ -297,12 +297,15 @@ def tool_align_structures(
     target_selection: str = "",
     method: str = "align",
     cutoff: float = 2.0,
-    cycles: int = 5
+    cycles: int = 5,
+    mobile_chain: str = "",
+    target_chain: str = "",
+    **kwargs
 ) -> Dict[str, Any]:
     """Align mobile object onto target reference and calculate RMSD."""
     try:
         res = GLOBAL_CONTEXT.aligner.align_structures(
-            mobile, target, mobile_selection, target_selection, method, cutoff, cycles
+            mobile, target, mobile_selection, target_selection, method, cutoff, cycles, mobile_chain, target_chain
         )
         res["success"] = True
         return res
@@ -314,11 +317,16 @@ def tool_calculate_rmsd(
     mobile_selection: str,
     target_selection: str,
     atom_type: str = "CA",
-    align_first: bool = False
+    align_first: bool = False,
+    mobile_chain: str = "",
+    target_chain: str = "",
+    **kwargs
 ) -> Dict[str, Any]:
     """Calculate RMSD between two selections with explicit atom filtering (CA, backbone, or all)."""
     try:
-        res = GLOBAL_CONTEXT.aligner.calculate_rmsd(mobile_selection, target_selection, atom_type, align_first)
+        res = GLOBAL_CONTEXT.aligner.calculate_rmsd(
+            mobile_selection, target_selection, atom_type, align_first, mobile_chain, target_chain
+        )
         res["success"] = True
         return res
     except Exception as e:

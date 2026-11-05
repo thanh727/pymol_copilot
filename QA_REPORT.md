@@ -320,12 +320,48 @@ In Phase 3, scientific workflows were audited and elevated to validated, depende
 - **Execution:** `execute_deterministic({"target": "1ubq"})`.
 - **Outcome:** Total atoms: 660, protein atoms: 602, solvent atoms: 58, chains: `['A']`. Secondary structure elements identified $\rightarrow$ `WorkflowState.COMPLETED`.
 
-#### WF03 — Structure Comparison & Independent Kabsch RMSD (1AKE vs 4AKE)
-- **Comparison:** Closed state (`1AKE`, 3804 atoms) vs Open state (`4AKE`, 3868 atoms).
-- **Tool Result:** PyMOL C-alpha coordinate alignment yields $\text{RMSD} = 18.4487\text{ \AA}$ across 428 aligned atoms.
-- **Independent Validation:** Extracted identical $C\alpha$ coordinates, centered structures, and computed rotation matrix $R = V U^T$ via Singular Value Decomposition (SVD) with reflection correction $\det(R) = 1$ in NumPy.
-  $$\text{Independent Kabsch RMSD} = 18.4487\text{ \AA}$$
-- **Discrepancy:** $\mathbf{0.0000\text{ \AA}}$ ($\Delta < 10^{-4}\text{ \AA}$) $\rightarrow$ **VALIDATED**.
+#### WF03 — Structure Comparison & Scientific Validation: Adenylate Kinase (1AKE vs 4AKE)
+
+##### 1. Scientific Investigation of the Initial 18.4487 Å Report
+- **Context & literature baseline:** *Escherichia coli* adenylate kinase (AK, 214 residues) undergoes large domain rearrangements between open (apo, `4AKE`) and closed substrate-bound (`1AKE` with $\text{Ap}_5\text{A}$) states. Published structural analyses (e.g. Müller et al., 1996; Beckstein et al., 2009) report an overall monomer $C\alpha$ RMSD of $\sim 7.1\text{ \AA}$ between open and closed conformations, with a rigid CORE domain (residues 1–29, 60–121, 160–214) exhibiting an RMSD of $\sim 1.5–2.0\text{ \AA}$, while the AMP-binding (NMP) domain (residues 30–59) and ATP-binding (LID) domain (residues 122–159) rotate by $38^\circ$ and $91^\circ$ respectively.
+- **Root-cause analysis of the 18.4487 Å result:**
+  1. Both PDB entries (`1AKE` and `4AKE`) were crystallized with **two copies per asymmetric unit** (chains A and B, $2\times 214 = 428$ residues). In solution, however, *E. coli* AK is an active functional monomer.
+  2. The relative orientation of chain A to chain B in the crystallographic asymmetric unit differs drastically between the two crystal forms:
+     - Center-of-mass (COM) distance between chain A and chain B in `1AKE`: **$42.96\text{ \AA}$**
+     - COM distance between chain A and chain B in `4AKE`: **$33.06\text{ \AA}$** ($\sim 10\text{ \AA}$ difference in crystal packing).
+  3. When an unpartitioned alignment is performed across the entire asymmetric unit (`1AKE and name CA` vs `4AKE and name CA`), a single global rigid-body translation/rotation is forced over both chains. Aligning chain A causes chain B to be displaced by $> 56\text{ \AA}$, and the global least-squares optimization compromises across both chains to yield an artificial, biologically unmeaningful RMSD of **$18.4487\text{ \AA}$**.
+  4. The algorithm and mathematical solver were functioning correctly, but the biological scope was flawed: an unpartitioned multi-chain crystal lattice comparison was executed instead of a biologically relevant single-chain monomer superposition.
+
+##### 2. Corrected Chain-Resolved Benchmark Results
+We updated WF03 and `StructureAligner` to automatically inspect chain topology and default to corresponding single-chain comparisons (`Chain A vs Chain A` or `Chain B vs Chain B`), while supporting explicit multi-chain and sub-selection modes:
+
+| Comparison Scope | Aligned $C\alpha$ Count | PyMOL Global $C\alpha$ RMSD (`cycles=0`) | PyMOL Refined Core RMSD (`cycles=5`) | Independent NumPy Kabsch RMSD | Discrepancy ($\Delta$) | Literature Concordance |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Chain A vs Chain A** | 214 | **$7.1307\text{ \AA}$** | **$2.0691\text{ \AA}$** | **$7.1307\text{ \AA}$** | $\mathbf{0.0000\text{ \AA}}$ ($< 10^{-7}\text{ \AA}$) | **Full Concordance** ($\sim 7.1\text{ \AA}$ global, $\sim 2.0\text{ \AA}$ core) |
+| **Chain B vs Chain B** | 214 | **$6.8980\text{ \AA}$** | **$2.0773\text{ \AA}$** | **$6.8980\text{ \AA}$** | $\mathbf{0.0000\text{ \AA}}$ ($< 10^{-7}\text{ \AA}$) | **Full Concordance** ($\sim 6.9\text{ \AA}$ global, $\sim 2.0\text{ \AA}$ core) |
+| **Multichain (Chains A+B)** | 428 | $18.4487\text{ \AA}$ | $18.4487\text{ \AA}$ | $18.4487\text{ \AA}$ | $0.0000\text{ \AA}$ | **Crystal Packing Artifact** (Subunit lattice shift) |
+
+##### 3. Algorithm Sensitivity Analysis (Chain A vs Chain A)
+- **`align` (Sequence-guided + outlier rejection):** Refined core RMSD = $2.0691\text{ \AA}$ (152 residues / 1135 atoms); Global unrefined $C\alpha$ RMSD = $7.1307\text{ \AA}$ (214 $C\alpha$ atoms).
+- **`super` (Structural superposition):** Refined core RMSD = $2.0691\text{ \AA}$; Global unrefined $C\alpha$ RMSD = $7.1307\text{ \AA}$.
+- **`cealign` (Combinatorial extension):** Core alignment RMSD = $3.4604\text{ \AA}$ across 112 core aligned residues.
+
+##### 4. Independent Kabsch SVD Mathematical Verification
+For sequence-matched residues 1 to 214 between `1AKE` Chain A and `4AKE` Chain A, coordinate matrices $\mathbf{P}, \mathbf{Q} \in \mathbb{R}^{214 \times 3}$ were extracted directly from the atomic records:
+1. Centered coordinates: $\mathbf{P}_c = \mathbf{P} - \boldsymbol{\mu}_P$, $\mathbf{Q}_c = \mathbf{Q} - \boldsymbol{\mu}_Q$.
+2. Covariance matrix: $\mathbf{H} = \mathbf{P}_c^T \mathbf{Q}_c$.
+3. Singular Value Decomposition: $\mathbf{H} = \mathbf{U} \mathbf{S} \mathbf{V}^T$.
+4. Optimal rotation: $\mathbf{R} = \mathbf{V} \begin{pmatrix} 1 & 0 & 0 \\ 0 & 1 & 0 \\ 0 & 0 & \det(\mathbf{V} \mathbf{U}^T) \end{pmatrix} \mathbf{U}^T$.
+5. Rotated coordinates: $\mathbf{P}_{\text{rot}} = \mathbf{P}_c \mathbf{R}^T$.
+6. Coordinate RMSD:
+   $$\text{RMSD} = \sqrt{\frac{1}{N} \sum_{i=1}^N \|\mathbf{P}_{\text{rot}, i} - \mathbf{Q}_{c, i}\|^2} = \mathbf{7.130704\text{ \AA}}$$
+Discrepancy with PyMOL's reported coordinate RMSD: $\mathbf{< 10^{-7}\text{ \AA}}$ ($\Delta = 0.0000\text{ \AA}$).
+
+##### 5. Architectural Safeguards in WF03
+- **Automatic Chain Detection:** Queries `get_chains` on both objects; if multichain proteins are detected without an explicit scope directive, defaults to comparing corresponding chains (e.g., Chain A vs Chain A) to prevent asymmetric unit packing inflation.
+- **Multichain Anomaly Detector:** If a multichain comparison is explicitly executed and yields an RMSD $> 12.0\text{ \AA}$, WF03 automatically injects an explicit scientific caveat into the results:
+  `"Scientific Warning: Elevated multichain RMSD (>12 Å) detected across multi-subunit complex. Ensure this reflects quaternary reorganization rather than non-crystallographic symmetry (NCS) crystal packing divergence."`
+- **Missing / Nonexistent Chain Handling:** Any request targeting a nonexistent chain (e.g. Chain Z) halts immediately in `WorkflowState.FAILED` with a descriptive message rather than silently falling back to whole-structure alignment.
 
 #### WF04 — Mutation Analysis: Residue 42 in Ubiquitin (Arg42)
 - **Inspection vs Comparison Distinction:** `WorkflowExecutionRecord` explicitly sets `is_single_structure_inspection = True` to unambiguously distinguish single-structure mutation neighborhood inspection from two-structure wild-type-versus-mutant superpositions.
@@ -367,6 +403,7 @@ The **PyMOL AI Copilot** plugin has satisfied all Phase 3 deterministic workflow
 - Verified deterministic state engine (`PENDING`, `RUNNING`, `VALIDATING`, `COMPLETED`, `FAILED`, `CANCELLED`).
 - Mandatory validation gate enforcement for reference workflows WF01–WF05.
 - Independent numerical validation of RMSD, pairwise contacts, and mutation neighborhood analysis down to $< 10^{-4}\text{ \AA}$ precision.
+- Chain-resolved structural comparison eliminating crystal packing artifacts and matching published adenylate kinase open/closed literature benchmarks (~7.13 Å global Ca, ~2.07 Å refined core).
 - Reliable agent error recovery, loop breaking, and capability expansion with Tier X security boundaries.
 
-Total automated tests: **85 tests across 10 modules** ($\mathbf{100\%}$ pass rate, 0 failures, 0 errors). The system is fully production-validated.
+Total automated tests: **89 tests across 10 modules** ($\mathbf{100\%}$ pass rate, 0 failures, 0 errors). The system is fully production-validated.

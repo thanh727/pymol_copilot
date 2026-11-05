@@ -310,9 +310,13 @@ class WorkflowDefinition:
             # WF03: Structure Comparison & Alignment
             # ----------------------------------------------------------------
             elif self.workflow_id == "WF03":
-                mobile = inputs.get("mobile", "")
-                target = inputs.get("target", "")
-                method = inputs.get("method", "align")
+                mobile = inputs.get("mobile", "").strip()
+                target = inputs.get("target", "").strip()
+                method = inputs.get("method", "align").strip()
+                input_scope = inputs.get("scope", "").strip().lower()
+                req_chain = inputs.get("chain", "").strip()
+                mob_chain_in = inputs.get("mobile_chain", req_chain).strip()
+                tgt_chain_in = inputs.get("target_chain", req_chain).strip()
 
                 record.state = WorkflowState.VALIDATING
                 t0 = time.time()
@@ -330,44 +334,149 @@ class WorkflowDefinition:
                         record.error = f"Precondition gate failed: Requires at least 2 distinct objects (found {len(objs)})."
                         return record
 
-                # Superimposition
+                # Automatic Multi-chain Detection
+                res_mob_chains = reg.execute("get_chains", {"object_name": mobile})
+                res_tgt_chains = reg.execute("get_chains", {"object_name": target})
+                mob_chains_raw = res_mob_chains.get("chains", [])
+                tgt_chains_raw = res_tgt_chains.get("chains", [])
+
+                if isinstance(mob_chains_raw, dict):
+                    mob_chains = mob_chains_raw.get(mobile, list(mob_chains_raw.values())[0] if mob_chains_raw else [])
+                else:
+                    mob_chains = list(mob_chains_raw)
+
+                if isinstance(tgt_chains_raw, dict):
+                    tgt_chains = tgt_chains_raw.get(target, list(tgt_chains_raw.values())[0] if tgt_chains_raw else [])
+                else:
+                    tgt_chains = list(tgt_chains_raw)
+
+                # Scope Disambiguation: Distinguish single-chain and multichain comparisons
+                if input_scope == "multichain" or (mob_chain_in.lower() == "all" and tgt_chain_in.lower() == "all"):
+                    comparison_scope = "multichain"
+                    eff_mob_chain = ""
+                    eff_tgt_chain = ""
+                else:
+                    comparison_scope = "single_chain"
+                    # Validate explicit chain requests
+                    if mob_chain_in and mob_chain_in not in mob_chains:
+                        record.state = WorkflowState.FAILED
+                        record.error = f"Requested chain '{mob_chain_in}' does not exist in mobile structure '{mobile}' (available chains: {mob_chains})."
+                        return record
+                    if tgt_chain_in and tgt_chain_in not in tgt_chains:
+                        record.state = WorkflowState.FAILED
+                        record.error = f"Requested chain '{tgt_chain_in}' does not exist in target structure '{target}' (available chains: {tgt_chains})."
+                        return record
+
+                    # Determine chain correspondence without relying on atom order
+                    if mob_chain_in:
+                        eff_mob_chain = mob_chain_in
+                    elif "A" in mob_chains:
+                        eff_mob_chain = "A"
+                    elif mob_chains:
+                        eff_mob_chain = mob_chains[0]
+                    else:
+                        eff_mob_chain = ""
+
+                    if tgt_chain_in:
+                        eff_tgt_chain = tgt_chain_in
+                    elif eff_mob_chain in tgt_chains:
+                        eff_tgt_chain = eff_mob_chain
+                    elif "A" in tgt_chains:
+                        eff_tgt_chain = "A"
+                    elif tgt_chains:
+                        eff_tgt_chain = tgt_chains[0]
+                    else:
+                        eff_tgt_chain = ""
+
+                # Step 2: Superimpose Structures with explicit chain scoping
                 record.state = WorkflowState.RUNNING
+                align_args = {
+                    "mobile": mobile,
+                    "target": target,
+                    "method": method,
+                    "mobile_chain": eff_mob_chain if comparison_scope == "single_chain" else "",
+                    "target_chain": eff_tgt_chain if comparison_scope == "single_chain" else ""
+                }
                 t0 = time.time()
-                res_align = reg.execute("align_structures", {"mobile": mobile, "target": target, "method": method})
+                res_align = reg.execute("align_structures", align_args)
                 d_align = round((time.time() - t0) * 1000, 2)
 
-                step2 = WorkflowStepExecution(2, "Superimpose Structures", "align_structures",
+                step2 = WorkflowStepExecution(2, f"Superimpose Structures ({comparison_scope})", "align_structures",
                                               StepState.COMPLETED if res_align.get("success") else StepState.FAILED,
-                                              {"mobile": mobile, "target": target, "method": method}, res_align, d_align,
-                                              error_message=res_align.get("error"))
+                                              align_args, res_align, d_align, error_message=res_align.get("error"))
                 record.step_records.append(step2)
                 if not res_align.get("success"):
                     record.state = WorkflowState.FAILED
                     record.error = f"Structural alignment failed: {res_align.get('error')}"
                     return record
 
-                # Strict C-alpha RMSD & Divergent Loci
+                # Step 3: Strict C-alpha RMSD Calculation & Residue Deviations
                 record.state = WorkflowState.VALIDATING
                 t0 = time.time()
-                res_rmsd = reg.execute("calculate_rmsd", {"mobile_selection": f"{mobile} and name CA", "target_selection": f"{target} and name CA"})
-                res_comp = reg.execute("compare_residues", {"object1": target, "object2": mobile})
+                mob_sel_str = f"{mobile}" + (f" and chain {eff_mob_chain}" if (comparison_scope == "single_chain" and eff_mob_chain) else "")
+                tgt_sel_str = f"{target}" + (f" and chain {eff_tgt_chain}" if (comparison_scope == "single_chain" and eff_tgt_chain) else "")
+
+                res_rmsd = reg.execute("calculate_rmsd", {
+                    "mobile_selection": mob_sel_str,
+                    "target_selection": tgt_sel_str,
+                    "atom_type": "CA"
+                })
+                res_comp = reg.execute("compare_residues", {
+                    "structure1": target,
+                    "structure2": mobile,
+                    "chain1": eff_tgt_chain or (tgt_chains[0] if tgt_chains else "A"),
+                    "chain2": eff_mob_chain or (mob_chains[0] if mob_chains else "A")
+                })
                 d_val = round((time.time() - t0) * 1000, 2)
 
-                step3 = WorkflowStepExecution(3, "Calculate Strict C-alpha RMSD", "calculate_rmsd", StepState.COMPLETED,
-                                              {"mobile_selection": f"{mobile} and name CA", "target_selection": f"{target} and name CA"}, res_rmsd, d_val)
+                step3 = WorkflowStepExecution(3, "Calculate Strict C-alpha RMSD & Residue Deviations", "calculate_rmsd",
+                                              StepState.COMPLETED if res_rmsd.get("success") else StepState.FAILED,
+                                              {"mobile_selection": mob_sel_str, "target_selection": tgt_sel_str}, res_rmsd, d_val)
                 record.step_records.append(step3)
 
+                # Anomaly Detection & Scientific Warnings (No Automatic Blind Certification)
+                scientific_warning = None
+                rmsd_val = res_rmsd.get("rmsd", res_align.get("rmsd", 0.0))
+                rmsd_global_ca = res_align.get("rmsd_global_ca", rmsd_val)
+                rmsd_refined_core = res_align.get("rmsd_refined_core", res_align.get("rmsd", rmsd_val))
+                matched_residues = res_align.get("matched_residues", res_comp.get("compared_residues", 0))
+
+                if comparison_scope == "multichain" and rmsd_global_ca > 12.0:
+                    scientific_warning = (
+                        f"Multichain Asymmetric Unit Caveat: High global Ca RMSD ({rmsd_global_ca:.2f} Å) across "
+                        f"multiple chains reflects quaternary crystal packing or non-crystallographic symmetry (NCS) "
+                        f"divergence between crystal lattices, not monomer unfolding. "
+                        f"Evaluate single-chain comparisons (e.g. Chain A vs Chain A) for functional conformational changes."
+                    )
+                elif comparison_scope == "single_chain" and rmsd_global_ca > 15.0:
+                    scientific_warning = (
+                        f"Scientific Review Required: Single-chain Ca RMSD is unusually high ({rmsd_global_ca:.2f} Å). "
+                        f"Verify chain correspondence, sequence alignment coverage, or severe domain reorientation."
+                    )
+
                 record.scientific_measurements = {
+                    "comparison_scope": comparison_scope,
                     "mobile": mobile,
                     "target": target,
-                    "method": method,
-                    "rmsd_angstrom": res_rmsd.get("rmsd", res_align.get("rmsd", 0.0)),
-                    "aligned_atoms": res_align.get("aligned_atoms", 0),
+                    "mobile_chain": eff_mob_chain if comparison_scope == "single_chain" else "all",
+                    "target_chain": eff_tgt_chain if comparison_scope == "single_chain" else "all",
+                    "chains_detected": {"mobile": mob_chains, "target": tgt_chains},
+                    "fitting_method": method,
+                    "atom_selection": "name CA",
+                    "rmsd_angstrom": rmsd_global_ca if comparison_scope == "single_chain" else res_rmsd.get("rmsd", rmsd_global_ca),
+                    "rmsd_global_ca": rmsd_global_ca,
+                    "rmsd_refined_core": rmsd_refined_core,
+                    "aligned_atoms": res_align.get("aligned_atoms", res_rmsd.get("atoms_compared", 0)),
+                    "total_initial_atoms": res_align.get("total_initial_atoms", 0),
+                    "matched_residues": matched_residues,
                     "outlier_rejection_cycles": res_align.get("cycles", 0),
-                    "divergent_residues_count": res_comp.get("divergent_residues_count", 0),
-                    "max_displacement_angstrom": res_comp.get("max_displacement", 0.0)
+                    "divergent_residues_count": res_comp.get("deviating_residues_count", 0),
+                    "max_displacement_angstrom": res_comp.get("max_displacement", 0.0),
+                    "scientific_warning": scientific_warning
                 }
-                record.units = {"rmsd_angstrom": "Å", "displacement": "Å"}
+                record.units = {"rmsd_angstrom": "Å", "rmsd_global_ca": "Å", "rmsd_refined_core": "Å", "displacement": "Å"}
+                if scientific_warning:
+                    record.scientific_caveats.append(scientific_warning)
                 record.validation_gates_passed = True
                 record.state = WorkflowState.COMPLETED
 
@@ -581,8 +690,15 @@ class WorkflowSession:
             if "chains" in result:
                 self.scientific_measurements["chains"] = result.get("chains")
             if "rmsd" in result or "rmsd_post_refinement" in result:
-                self.scientific_measurements["rmsd_angstrom"] = result.get("rmsd", result.get("rmsd_post_refinement"))
+                self.scientific_measurements["rmsd_angstrom"] = result.get("rmsd_global_ca", result.get("rmsd", result.get("rmsd_post_refinement")))
+                self.scientific_measurements["rmsd_refined_core"] = result.get("rmsd_refined_core", result.get("rmsd"))
+                self.scientific_measurements["rmsd_global_ca"] = result.get("rmsd_global_ca")
                 self.scientific_measurements["aligned_atoms"] = result.get("aligned_atoms", 0)
+                self.scientific_measurements["matched_residues"] = result.get("matched_residues", 0)
+                if "mobile_chain" in result:
+                    self.scientific_measurements["mobile_chain"] = result["mobile_chain"]
+                if "target_chain" in result:
+                    self.scientific_measurements["target_chain"] = result["target_chain"]
             if "polar_contact_candidates_count" in result:
                 self.scientific_measurements["polar_contacts_count"] = result.get("polar_contact_candidates_count")
             if "neighbor_residues_count" in result:
@@ -709,6 +825,10 @@ class EntityExtractor:
         file_match = re.search(r"([a-zA-Z0-9_\-\./\\]+\.(?:png|pse|pml|cif|pdb|json|csv))\b", text, re.IGNORECASE)
         if file_match:
             entities["file_path"] = file_match.group(1)
+
+        # 8. Comparison scope (multichain vs single_chain)
+        if re.search(r"\b(multichain|multi-chain|all chains|toàn bộ chuỗi|toàn bộ protein)\b", text, re.IGNORECASE):
+            entities["scope"] = "multichain"
 
         return entities
 
