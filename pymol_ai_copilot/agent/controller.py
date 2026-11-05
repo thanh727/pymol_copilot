@@ -11,6 +11,7 @@ from .ollama_client import OllamaClient, OllamaClientError
 from .prompts import format_context_prompt
 from .tool_registry import GLOBAL_REGISTRY, ToolRegistry
 from .tools import GLOBAL_CONTEXT
+from .workflow_engine import GLOBAL_WORKFLOW_REGISTRY, WorkflowDefinition
 
 
 class AgentStep:
@@ -100,6 +101,30 @@ class AgentController:
         current_context = GLOBAL_CONTEXT.inspector.get_context_for_prompt()
         system_prompt = format_context_prompt(current_context)
 
+        # 2. Scientific Workflow Matching & Entity Resolution
+        try:
+            loaded_objs = GLOBAL_CONTEXT.inspector.get_loaded_objects()
+        except Exception:
+            loaded_objs = []
+        matched_wf, entities, confidence = GLOBAL_WORKFLOW_REGISTRY.match_workflow(user_instruction, loaded_objs)
+
+        if matched_wf:
+            # Context-dependent tool scoping: expose only approved relevant capabilities
+            tools_schema = self.registry.get_ollama_tools(subset=matched_wf.required_capabilities)
+            # Inject declarative workflow execution guidance
+            wf_prompt = matched_wf.generate_guidance_prompt(entities)
+            system_prompt = f"{system_prompt}\n\n{wf_prompt}"
+            if step_callback:
+                step_callback({
+                    "type": "workflow_selected",
+                    "workflow_id": matched_wf.workflow_id,
+                    "name": matched_wf.name,
+                    "confidence": confidence,
+                    "entities": entities
+                })
+        else:
+            tools_schema = self.registry.get_ollama_tools()
+
         # Prepare messages
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt}
@@ -114,7 +139,6 @@ class AgentController:
         # Also store user instruction in persistent history
         self.conversation_history.append({"role": "user", "content": user_instruction})
 
-        tools_schema = self.registry.get_ollama_tools()
         executed_steps: List[AgentStep] = []
         final_answer = ""
         total_start_time = time.time()
@@ -323,12 +347,34 @@ class AgentController:
                 })
 
         total_time = round(time.time() - total_start_time, 2)
+
+        # Scientific provenance and verification audit
+        provenance = {
+            "workflow_id": matched_wf.workflow_id if matched_wf else "ad-hoc",
+            "workflow_name": matched_wf.name if matched_wf else "Unstructured",
+            "confidence": confidence if matched_wf else 0.0,
+            "entities": entities if matched_wf else {},
+            "pymol_version": "3.1.0",
+            "units": {"distances": "angstroms", "angles": "degrees", "rmsd": "angstroms"},
+            "tools_executed": [tr["tool"] for s in executed_steps for tr in s.tool_results if tr["result"].get("success")],
+            "scientific_limitations": matched_wf.scientific_limitations if matched_wf else []
+        }
+
+        # Success determination: do not claim success if execution stopped early due to unrecovered failure
+        is_success = not self._cancelled
+        all_results = [tr["result"] for s in executed_steps for tr in s.tool_results]
+        if all_results and all(not r.get("success", False) for r in all_results):
+            is_success = False
+
         return {
-            "success": True,
+            "success": is_success,
+            "status": "success" if is_success else ("cancelled" if self._cancelled else "failed"),
             "cancelled": self._cancelled,
             "final_response": final_answer,
             "steps_count": len(executed_steps),
             "steps": [s.to_dict() for s in executed_steps],
             "total_duration_seconds": total_time,
-            "model_used": self.model_name
+            "model_used": self.model_name,
+            "workflow": matched_wf.workflow_id if matched_wf else None,
+            "provenance": provenance
         }

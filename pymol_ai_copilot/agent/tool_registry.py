@@ -45,7 +45,10 @@ class ToolRegistry:
     def list_tools(self) -> List[ToolDefinition]:
         return list(self._tools.values())
 
-    def get_ollama_tools(self) -> List[Dict[str, Any]]:
+    def get_ollama_tools(self, subset: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        if subset:
+            subset_set = set(subset)
+            return [t.to_ollama_format() for t in self._tools.values() if t.name in subset_set]
         return [t.to_ollama_format() for t in self._tools.values()]
 
     def execute(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:

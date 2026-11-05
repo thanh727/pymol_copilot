@@ -1,0 +1,522 @@
+{
+  "workflows": [
+    {
+      "workflow_id": "WF01",
+      "name": "Structure Acquisition",
+      "description": "Download structure by PDB ID or load local molecular file, verify atom loading, and apply standard styling.",
+      "user_intents": [
+        "download",
+        "fetch",
+        "get pdb",
+        "open pdb",
+        "load pdb",
+        "tải về",
+        "tải cấu trúc",
+        "mở pdb",
+        "tải pdb",
+        "download pdb"
+      ],
+      "intent_patterns": [
+        "(?:download|fetch|tải về|tải)\\s+(?:pdb\\s+)?([0-9][a-zA-Z0-9]{3}|af-[a-zA-Z0-9]+-f\\d+)",
+        "(?:open|mở)\\s+(?:cấu trúc\\s+)?([0-9][a-zA-Z0-9]{3})"
+      ],
+      "required_inputs": [
+        "pdb_id"
+      ],
+      "required_capabilities": [
+        "fetch_structure",
+        "load_structure",
+        "count_atoms",
+        "get_object_info",
+        "show_representation",
+        "color_selection",
+        "orient_selection",
+        "list_objects"
+      ],
+      "steps": [
+        {
+          "step_number": 1,
+          "name": "Resolve PDB Identifier",
+          "description": "Validate format of 4-character PDB code or AlphaFold ID",
+          "expected_capability": "fetch_structure",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 2,
+          "name": "Fetch Structure",
+          "description": "Download coordinate file directly from RCSB PDB without collision overwrite",
+          "expected_capability": "fetch_structure",
+          "required": true,
+          "preconditions": [],
+          "postconditions": [
+            "object_exists"
+          ]
+        },
+        {
+          "step_number": 3,
+          "name": "Verify Atoms & Chains",
+          "description": "Ensure non-zero atoms and enumerate loaded chains",
+          "expected_capability": "get_object_info",
+          "required": true,
+          "preconditions": [],
+          "postconditions": [
+            "atom_count_gt_zero"
+          ]
+        },
+        {
+          "step_number": 4,
+          "name": "Apply Visualization",
+          "description": "Display cartoon representation and color by secondary structure or chain",
+          "expected_capability": "show_representation",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 5,
+          "name": "Orient Camera",
+          "description": "Re-orient viewport along principal inertia axes",
+          "expected_capability": "orient_selection",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        }
+      ],
+      "validation_criteria": {
+        "precondition": "Valid 4-character PDB ID or accessible local file",
+        "postcondition": "Target object exists in PyMOL with count_atoms > 0",
+        "gate": "Network fetch must return status == 200 equivalent before subsequent tools execute"
+      },
+      "error_recovery": "If PDB fetch fails with 404, verify accession spelling. If network timeout occurs, inform user and do not retry invalid ID.",
+      "cancellation_behavior": "Delete half-loaded object if user cancels during fetch.",
+      "expected_outputs": [
+        "object_name",
+        "atom_count",
+        "chains",
+        "ligands"
+      ],
+      "scientific_limitations": [
+        "PDB coordinates represent crystallographic or cryo-EM models; disordered loops may have missing electron density.",
+        "Residue numbering follows author PDB convention and may differ from canonical UniProt sequence numbering."
+      ]
+    },
+    {
+      "workflow_id": "WF02",
+      "name": "Structural Inspection",
+      "description": "Inspect loaded structures, detailing chains, atom counts, heteroatoms, ligands, secondary structure, and missing features.",
+      "user_intents": [
+        "describe",
+        "inspect",
+        "summary",
+        "features",
+        "overview",
+        "report",
+        "mô tả",
+        "kiểm tra",
+        "tổng quan",
+        "đặc điểm",
+        "thông tin cấu trúc",
+        "structural features",
+        "loaded protein"
+      ],
+      "intent_patterns": [
+        "(?:describe|mô tả|inspect|kiểm tra)\\s+(?:the\\s+)?(?:loaded\\s+)?(?:protein|structure|cấu trúc|object|phân tử)",
+        "(?:summary|tổng quan|overview)\\s+(?:of\\s+)?(?:the\\s+)?(?:loaded\\s+)?(?:protein|structure)"
+      ],
+      "required_inputs": [],
+      "required_capabilities": [
+        "list_objects",
+        "get_object_info",
+        "get_chains",
+        "get_residues",
+        "get_structure_summary",
+        "count_atoms",
+        "color_selection"
+      ],
+      "steps": [
+        {
+          "step_number": 1,
+          "name": "Enumerate Objects",
+          "description": "Discover loaded molecular objects in PyMOL session",
+          "expected_capability": "list_objects",
+          "required": true,
+          "preconditions": [
+            "objects_exist"
+          ],
+          "postconditions": []
+        },
+        {
+          "step_number": 2,
+          "name": "Extract Macro-Statistics",
+          "description": "Query total atoms, protein/nucleic atoms, solvent, and inorganic ions",
+          "expected_capability": "get_object_info",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 3,
+          "name": "Identify Chains & Sequences",
+          "description": "Extract unique chain IDs and polymer residue lengths",
+          "expected_capability": "get_chains",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 4,
+          "name": "Detect Ligands & Heteroatoms",
+          "description": "Identify non-polymer organic ligands and cofactor residues",
+          "expected_capability": "get_object_info",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 5,
+          "name": "Synthesize Overview",
+          "description": "Summarize structural topology and report any detectable gaps or missing residues",
+          "expected_capability": "get_structure_summary",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        }
+      ],
+      "validation_criteria": {
+        "precondition": "At least one molecular object loaded in PyMOL session",
+        "postcondition": "Non-empty summary reporting atom counts, chains, and ligands"
+      },
+      "error_recovery": "If no structures are loaded, prompt user to download or load a structure first.",
+      "cancellation_behavior": "Immediate clean abort.",
+      "expected_outputs": [
+        "total_atoms",
+        "chains",
+        "ligands",
+        "bounding_box"
+      ],
+      "scientific_limitations": [
+        "Inspection is geometric and based on coordinate metadata; does not infer biological activity without experimental assays."
+      ]
+    },
+    {
+      "workflow_id": "WF03",
+      "name": "Structure Comparison",
+      "description": "Superimpose two protein structures, calculate RMSD, identify divergent regions, and report alignment coverage.",
+      "user_intents": [
+        "compare",
+        "align",
+        "rmsd",
+        "superimpose",
+        "structural alignment",
+        "so sánh",
+        "căn chỉnh",
+        "tính rmsd",
+        "chồng khớp"
+      ],
+      "intent_patterns": [
+        "(?:compare|so sánh)\\s+(?:these\\s+)?(?:two\\s+)?(?:proteins|structures|cấu trúc)",
+        "(?:align|căn chỉnh|superimpose)\\s+(?:structure\\s+)?\\w+\\s+(?:with|to|onto|và)\\s+\\w+",
+        "(?:calculate|tính)\\s+rmsd"
+      ],
+      "required_inputs": [
+        "mobile",
+        "target"
+      ],
+      "required_capabilities": [
+        "list_objects",
+        "get_chains",
+        "align_structures",
+        "calculate_rmsd",
+        "compare_residues",
+        "color_selection",
+        "export_analysis_json"
+      ],
+      "steps": [
+        {
+          "step_number": 1,
+          "name": "Resolve Comparison Targets",
+          "description": "Identify mobile and reference target objects from session",
+          "expected_capability": "list_objects",
+          "required": true,
+          "preconditions": [
+            "two_or_more_objects"
+          ],
+          "postconditions": []
+        },
+        {
+          "step_number": 2,
+          "name": "Verify Chain Compatibility",
+          "description": "Inspect chain identities in both structures",
+          "expected_capability": "get_chains",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 3,
+          "name": "Execute Structural Alignment",
+          "description": "Align mobile onto target using sequence-informed 'align' or structural 'super'",
+          "expected_capability": "align_structures",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 4,
+          "name": "Compute Strict C-alpha RMSD",
+          "description": "Measure coordinate displacement across aligned residue pairs",
+          "expected_capability": "calculate_rmsd",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 5,
+          "name": "Identify Divergent Loci",
+          "description": "Locate residues with significant spatial displacement (> threshold)",
+          "expected_capability": "compare_residues",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 6,
+          "name": "Visualize Superimposition",
+          "description": "Color structures distinctly to highlight conformational differences",
+          "expected_capability": "color_selection",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        }
+      ],
+      "validation_criteria": {
+        "precondition": "At least 2 distinct objects loaded in PyMOL",
+        "postcondition": "Valid RMSD floating-point measurement (> 0.0) and aligned atom count > 0"
+      },
+      "error_recovery": "If sequence-informed 'align' fails due to low sequence homology (<30%), automatically fall back to structure-based 'super'.",
+      "cancellation_behavior": "Preserve original coordinates if alignment is cancelled before completion.",
+      "expected_outputs": [
+        "rmsd_post_refinement",
+        "aligned_atoms",
+        "divergent_residues"
+      ],
+      "scientific_limitations": [
+        "PyMOL 'align' performs outlier rejection cycles by default; reported post-refinement RMSD reflects the retained core atoms.",
+        "Unrefined all-atom or C-alpha RMSD should be reported alongside aligned atom counts for rigorous comparability."
+      ]
+    },
+    {
+      "workflow_id": "WF04",
+      "name": "Mutation Neighborhood",
+      "description": "Analyze point mutation position, verify wildtype residue, measure spatial contact neighborhood, and visualize local locus.",
+      "user_intents": [
+        "mutation",
+        "analyze mutation",
+        "neighborhood",
+        "variant",
+        "đột biến",
+        "phân tích đột biến",
+        "lân cận",
+        "vùng lân cận"
+      ],
+      "intent_patterns": [
+        "(?:analyze|phân tích)\\s+(?:mutation|đột biến)\\s+([A-Za-z]{1,3}\\d+[A-Za-z]{1,3})",
+        "(?:mutation|đột biến)\\s+([A-Za-z]{1,3}\\d+[A-Za-z]{1,3})",
+        "residues?\\s+within\\s+\\d+\\s*(?:a|angstroms?|å)\\s+of\\s+(?:residue\\s+)?\\w+"
+      ],
+      "required_inputs": [
+        "mutation_notation"
+      ],
+      "required_capabilities": [
+        "list_objects",
+        "analyze_mutation",
+        "identify_mutations",
+        "find_nearby_residues",
+        "find_polar_contact_candidates",
+        "highlight_residues",
+        "label_residues",
+        "orient_selection"
+      ],
+      "steps": [
+        {
+          "step_number": 1,
+          "name": "Parse Mutation Notation",
+          "description": "Extract wildtype residue, sequence position, mutant amino acid, and chain",
+          "expected_capability": "analyze_mutation",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 2,
+          "name": "Validate Wildtype in Structure",
+          "description": "Verify that the amino acid at the specified position matches wildtype",
+          "expected_capability": "analyze_mutation",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 3,
+          "name": "Measure Spatial Neighborhood",
+          "description": "Identify all residues within cutoff distance (default 5.0 Å) of the mutation site",
+          "expected_capability": "find_nearby_residues",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 4,
+          "name": "Find Geometric Polar Contacts",
+          "description": "Identify candidate donor/acceptor pairs (distance <= 3.5 Å)",
+          "expected_capability": "find_polar_contact_candidates",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 5,
+          "name": "Render Visual Highlighting",
+          "description": "Display mutation site as sticks/spheres with labels and local neighborhood context",
+          "expected_capability": "highlight_residues",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 6,
+          "name": "Orient on Mutation Site",
+          "description": "Center and zoom viewport onto the mutation locus",
+          "expected_capability": "orient_selection",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        }
+      ],
+      "validation_criteria": {
+        "precondition": "Target protein loaded in session and residue position exists",
+        "postcondition": "Verified wildtype match or explicit discrepancy report, plus contact residue list"
+      },
+      "error_recovery": "If wildtype amino acid does not match sequence position, report the actual residue found in the PDB rather than failing silently.",
+      "cancellation_behavior": "Clear temporary selections on cancel.",
+      "expected_outputs": [
+        "wildtype_match",
+        "residue_neighborhood",
+        "polar_contacts"
+      ],
+      "scientific_limitations": [
+        "Distance-based polar contacts (<= 3.5 Å) are geometric donor-acceptor approximations, not confirmed physical hydrogen bonds.",
+        "Geometric proximity does NOT establish thermodynamic delta-delta-G or functional pathogenicity without validated biophysical modeling."
+      ]
+    },
+    {
+      "workflow_id": "WF05",
+      "name": "Publication Visualization",
+      "description": "Prepare publication-grade molecular rendering with publication preset, white background, optimal camera orientation, and export.",
+      "user_intents": [
+        "publication",
+        "figure",
+        "render",
+        "export image",
+        "high quality",
+        "clean figure",
+        "chất lượng xuất bản",
+        "xuất hình",
+        "chụp ảnh",
+        "kết xuất hình ảnh"
+      ],
+      "intent_patterns": [
+        "(?:prepare|tạo|chuẩn bị)\\s+(?:a\\s+)?(?:publication|chất lượng xuất bản|figure|hình ảnh)",
+        "(?:render|export)\\s+(?:a\\s+)?(?:high-res|figure|png|image)"
+      ],
+      "required_inputs": [],
+      "required_capabilities": [
+        "list_objects",
+        "apply_visualization_preset",
+        "show_representation",
+        "color_selection",
+        "set_background",
+        "set_transparency",
+        "orient_selection",
+        "zoom_selection",
+        "export_png",
+        "save_session",
+        "export_pml"
+      ],
+      "steps": [
+        {
+          "step_number": 1,
+          "name": "Assess Structure Focus",
+          "description": "Inspect loaded objects and active selections",
+          "expected_capability": "list_objects",
+          "required": true,
+          "preconditions": [
+            "objects_exist"
+          ],
+          "postconditions": []
+        },
+        {
+          "step_number": 2,
+          "name": "Apply Publication Preset",
+          "description": "Set clean cartoon representation with distinct chain coloring or binding site focus",
+          "expected_capability": "apply_visualization_preset",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 3,
+          "name": "Configure High-Contrast Environment",
+          "description": "Set background to pure white for journal publication standards",
+          "expected_capability": "set_background",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 4,
+          "name": "Optimize Camera Viewport",
+          "description": "Orient view along principal axes and apply framing buffer",
+          "expected_capability": "orient_selection",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 5,
+          "name": "Ray-Trace & Export PNG",
+          "description": "Render high-resolution figure (1920x1080) with PyMOL ray-tracing engine",
+          "expected_capability": "export_png",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        },
+        {
+          "step_number": 6,
+          "name": "Export Reproducible Script & Session",
+          "description": "Save session state (.pse) and reproducible PyMOL command script (.pml)",
+          "expected_capability": "export_pml",
+          "required": true,
+          "preconditions": [],
+          "postconditions": []
+        }
+      ],
+      "validation_criteria": {
+        "precondition": "At least one structure loaded in PyMOL session",
+        "postcondition": "Exported PNG file exists on disk and is non-empty (>0 bytes)"
+      },
+      "error_recovery": "If ray-tracing encounters memory or driver limitations, fall back to OpenGL viewport capture (`ray=False`).",
+      "cancellation_behavior": "Preserve previous camera view and settings if cancelled.",
+      "expected_outputs": [
+        "png_path",
+        "pse_path",
+        "pml_path"
+      ],
+      "scientific_limitations": [
+        "Publication figures represent static molecular models; molecular surfaces are calculated based on chosen solvent probe radius (default 1.4 Å)."
+      ]
+    }
+  ]
+}

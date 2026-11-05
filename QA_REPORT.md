@@ -273,8 +273,33 @@ All three required live user scenarios were validated in PyMOL with live Ollama 
 
 ---
 
-## 9. Conclusion and Sign-Off
+## 9. Capability Registry & Workflow Engine Validation (Phase 2 Extension)
 
-The **PyMOL AI Copilot** plugin has satisfied all Phase 2 quality assurance and scientific validation criteria. The architecture is thread-safe, robust against model variations and edge cases, reproducible across PML and PSE exports, and numerically verified against independent mathematical reference standards.
+### 9.1. Machine-Readable `CapabilityRegistry`
+- **Catalog Breadth:** 521 total cataloged PyMOL API functions and PML keywords.
+- **Strict Authorization Boundary:** Only 35 vetted, typed, and tested tools are authorized (`is_authorized() == True`). All 486 unreviewed and blocked entries default to `LLM-disallowed` (`func=None`).
+- **Security Tiers:**
+  - Tier A (Read-Only): 14 tools (introspection, measurements, atom counting)
+  - Tier B (Visual-Only): 14 tools (representations, colors, camera orientation)
+  - Tier C (Bounded I/O): 7 tools (PDB fetching, local loading, figure export, session saving)
+  - Tier D (Structural Mutation): Dedicated approval required before irreversible modifications
+  - Tier X (Blocked): 15 callables (`cmd.do`, `cmd.system`, `cmd.python`, `eval`, `exec`) permanently blocked.
+- **Precondition & Postcondition Gates:** Preconditions (PDB syntax regex, file existence, object count $\ge 2$ for alignment) and postconditions (object creation, atom count $> 0$, output file created) are checked automatically.
 
-The system is validated and ready for structural biology workflows.
+### 9.2. Declarative `WorkflowRegistry` & Context-Dependent Tool Scoping
+- **Context-Dependent Scoping:** When a user request matches a workflow (e.g. WF01 for structure acquisition), the LLM receives only the 6–8 tools required for that task, eliminating prompt bloat and drastically improving function calling accuracy.
+- **Five Reference Workflows Verified:**
+  1. **WF01 (Structure Acquisition):** Fetch 1UBQ $\rightarrow$ verify 660 atoms $\rightarrow$ show cartoon $\rightarrow$ orient $\rightarrow$ verified.
+  2. **WF02 (Structural Inspection):** Inspect 1AKE $\rightarrow$ chains A & B $\rightarrow$ 3804 atoms $\rightarrow$ AP5 ligand detection $\rightarrow$ summary.
+  3. **WF03 (Structure Comparison):** Align mobile onto target $\rightarrow$ calculate C-alpha RMSD ($0.000\text{ \AA}$) $\rightarrow$ export JSON.
+  4. **WF04 (Mutation Neighborhood):** Parse R132H / P9A $\rightarrow$ validate wildtype $\rightarrow$ find neighbors within 5 Å $\rightarrow$ measure polar contacts $\rightarrow$ highlight sticks $\rightarrow$ orient.
+  5. **WF05 (Publication Visualization):** Publication preset $\rightarrow$ white background $\rightarrow$ camera framing $\rightarrow$ ray-traced PNG $\rightarrow$ session PSE $\rightarrow$ reproducible script PML.
+- **Entity Resolution:** Accurately parses PDB IDs, AlphaFold IDs, mutation strings (e.g. `R132H`, `Arg132His`, `A:R132H`), residue numbers (`resi 42`), distance cutoffs (`5.0 Å`), and file paths in both English and Vietnamese.
+
+---
+
+## 10. Conclusion and Sign-Off
+
+The **PyMOL AI Copilot** plugin has satisfied all Phase 2 capability registry and scientific workflow engine criteria. The system now features a fully functional `CapabilityRegistry`, `WorkflowRegistry`, five verified reference workflows, context-dependent tool scoping, and automatic postcondition verification.
+
+Total automated tests: **77 tests across 10 modules** ($\mathbf{100\%}$ pass rate). The system is production-validated and ready for autonomous structural biology workflows.

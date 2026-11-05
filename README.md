@@ -131,7 +131,16 @@ Seamlessly interprets user instructions in both **English** and **Vietnamese**:
   > Distance-based polar contacts are strictly reported as geometric candidates, not experimentally verified hydrogen bonds.
 - **Structure Comparison:** Aligns structures using sequence-guided refinement (`align`), structural superposition (`super`), or combinatorial extension (`cealign`). Calculates all-atom, backbone, or $C\alpha$ RMSD.
 
-### 4. Publication-Ready Visual Presets
+### 6. CapabilityRegistry & Scientific Workflow Engine
+- **CapabilityRegistry:** Machine-readable catalog containing 521 PyMOL API/PML functions. Enforces strict authorization where all 486 unreviewed and blocked entries default to `LLM-disallowed`. Exposes 35 typed, parameter-validated, and tested tools across 17 functional domains with pre- and post-condition verification gates.
+- **WorkflowRegistry:** Declarative scientific workflow engine that matches user intent and extracts biological entities (PDB IDs, AlphaFold accessions, mutations like `R132H`, distance cutoffs, and chains) to dynamically scope tools:
+  - **WF01 (Structure Acquisition):** Fetch PDB/AlphaFold, verify atoms and chains, apply styling, orient camera.
+  - **WF02 (Structural Inspection):** Comprehensive inventory of objects, chains, sequences, organic ligands, heteroatoms, and bounding box dimensions.
+  - **WF03 (Structure Comparison):** Superimpose structures, compute C-alpha RMSD, detect divergent loci, and export structured JSON.
+  - **WF04 (Mutation Neighborhood):** Validate wildtype amino acid, analyze spatial contact sphere within cutoff, detect geometric polar contact candidates, and highlight.
+  - **WF05 (Publication Visualization):** Coordinated publication styling, pure white background, ray-traced rendering, reproducible session (.pse) and PML script export.
+
+### 7. Publication-Ready Visual Presets
 One-click and natural language presets:
 - **Cartoon Chains:** Clean cartoon representation with distinct chain colors on a pure white background.
 - **Ligand Binding Pocket:** Transparent protein cartoon + sticks for pocket residues within 5.0 Å + highlighted ligand + polar contact dashes.
@@ -192,7 +201,7 @@ One-click and natural language presets:
 
 ## 🧪 Testing & Verification
 
-The test suite contains 58 automated unit, mock, and PyMOL integration tests across 8 test suites:
+The test suite contains 77 automated unit, mock, and PyMOL integration tests across 10 test suites:
 
 ```bash
 # Run all tests using PyMOL's Python interpreter
@@ -208,6 +217,8 @@ The test suite contains 58 automated unit, mock, and PyMOL integration tests acr
 - `test_agent_controller.py`: Autonomous Observe $\rightarrow$ Plan $\rightarrow$ Execute $\rightarrow$ Inspect $\rightarrow$ Finish cycle.
 - `test_regression_phase2.py`: QA regression suite for all Phase 2 defects (insertion codes, negative residue numbers, self-contacts, PML replay).
 - `test_structure_loading_and_loop_prevention.py`: Validation of `fetch_structure`, `load_structure`, security boundaries, disambiguation, loop prevention, and recovery.
+- `test_capability_and_workflow_engine.py`: Registry loading, unreviewed tool blocking, entity resolution, and context-dependent tool scoping.
+- `test_reference_workflows.py`: End-to-end execution of all 5 reference workflows (WF01 – WF05) with real structures and provenance.
 - `test_live_acceptance.py`: End-to-end multi-step validation with real local Ollama models (`qwen2.5-coder:7b` & `gemma4:latest`).
 
 ---

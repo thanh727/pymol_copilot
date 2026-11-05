@@ -156,3 +156,4 @@ PyMOL AI Copilot strictly enforces an allowlist architecture. The agent never ex
 - **Total Registered Tools in GLOBAL_REGISTRY:** 35 tools
 - **Test Suite Coverage:** 58 automated unit, integration, and live acceptance tests (100% pass rate)
 - **All 35 tools are strictly typed, parameter-validated, and mapped to specific PyMOL APIs.**
+
