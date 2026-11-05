@@ -2,8 +2,8 @@
 
 **Environment:** PyMOL 3.1.0 Open-Source (Homebrew `arm64`), Python 3.14.3, macOS 27.2  
 **Inventory Scope:** 488 discovered public callables and PML keywords (440 Python API callables, 312 PML keywords)  
-**Registered AI Tools:** 35 verified, typed, and tested tools  
-**Policy:** **Discovery does NOT imply authorization.** All 488 discovered PyMOL API functions default to **LLM-disallowed**.
+**Registered AI Tools:** 47 verified, typed, and tested tools  
+**Policy:** **Discovery does NOT imply authorization.** All unreviewed PyMOL API functions default to **LLM-disallowed**.
 
 ---
 
@@ -33,6 +33,8 @@ PyMOL AI Copilot strictly enforces an allowlist architecture. The agent never ex
 | `export_pml` | Script recorder | **implemented/tested** | Exports reproducible PML script reproducing all performed actions. |
 | `export_analysis_json` | JSON adapter | **implemented/tested** | Exports structured scientific data (RMSD, contacts, mutations). |
 | `export_analysis_csv` | CSV adapter | **implemented/tested** | Exports tabular scientific measurements. |
+| `export_ligand_contacts` | Ligand export adapter | **implemented/tested** | Exports ligand contact profiles and polar interactions to CSV/JSON. |
+| `export_sasa_analysis` | SASA export adapter | **implemented/tested** | Exports per-residue SASA (Å²) and RSA (%) tables to CSV/JSON. |
 | *None (unexposed)* | `cmd.load_traj` | **candidate (safe)** | Load MD trajectory frames into an existing object. |
 | *None (unexposed)* | `cmd.read_pdbstr` / `read_molstr` | **candidate (safe)** | Load structure from in-memory string. |
 
@@ -72,6 +74,8 @@ PyMOL AI Copilot strictly enforces an allowlist architecture. The agent never ex
 | `set_transparency` | `cmd.set` | **implemented/tested** | Sets surface or cartoon transparency (0.0 to 1.0). |
 | `label_residues` | `cmd.label` | **implemented/tested** | Draws 3D text labels in PyMOL viewport. |
 | `apply_visualization_preset` | Composite | **implemented/tested** | Applies presets: cartoon_by_chain, binding_pocket, mutation_neighborhood, epitope. |
+| `visualize_ligand_pocket` | Composite | **implemented/tested** | Publication styling for ligand pocket: cartoon receptor, sticks for ligand & pocket, polar contact dashes. |
+| `visualize_epitope` | Composite | **implemented/tested** | Visualizes mapped linear/conformational epitope using contrasting surface highlight or sticks. |
 
 ### 06 Camera and viewport
 | Copilot Tool | PyMOL API / PML | Status | Capabilities & Security Policy |
@@ -88,6 +92,8 @@ PyMOL AI Copilot strictly enforces an allowlist architecture. The agent never ex
 | `find_nearby_residues` | `cmd.iterate` + selection | **implemented/tested** | Finds all polymer residues within cutoff of target selection. |
 | `find_polar_contact_candidates` | `cmd.distance` + geometry | **implemented/tested** | Identifies geometric polar donor/acceptor pairs <= 3.5 Å. |
 | `inspect_binding_pocket` | Composite | **implemented/tested** | Comprehensive pocket analysis: contacts, hydrophobic, polar, aromatic residues. |
+| `identify_ligands` | `cmd.iterate` + heuristics | **implemented/tested** | Identifies bound biologically relevant ligands, excluding solvent and crystallization additives. |
+| `analyze_ligand_interactions` | NumPy pairwise distances | **implemented/tested** | Calculates minimum heavy-atom distances and identifies geometric polar contact candidates (< 3.5 Å). |
 
 ### 08 Structure alignment
 | Copilot Tool | PyMOL API / PML | Status | Capabilities & Security Policy |
@@ -96,12 +102,16 @@ PyMOL AI Copilot strictly enforces an allowlist architecture. The agent never ex
 | `calculate_rmsd` | `cmd.rms_cur` / `cmd.align` | **implemented/tested** | Calculates CA, backbone, or all-atom RMSD without or with superposition. |
 | `compare_residues` | NumPy distance per-residue | **implemented/tested** | Identifies specific residue positions with CA displacement > threshold. |
 | `identify_mutations` | Sequence alignment + coords | **implemented/tested** | Compares wildtype and mutant structures, reporting local CA displacements. |
+| `map_epitope_sequence` | Sequence search + NumPy | **implemented/tested** | Maps linear peptide sequences or residue lists to 3D coords, computing spatial centroid & clustering. |
+| `compare_wt_mutant` | Composite superposition | **implemented/tested** | Sequence-aware alignment of WT and mutant structures, CA/backbone displacement & contact deltas. |
+| `batch_compare_structures` | Batch engine | **implemented/tested** | Aligns multiple structures against a reference, computing consistent pairwise metrics table (max 20). |
 
 ### 09 Surface and accessibility
 | Copilot Tool | PyMOL API / PML | Status | Capabilities & Security Policy |
 |---|---|:---:|---|
-| *None (unexposed)* | `cmd.get_area` | **candidate (safe)** | Total solvent accessible surface area (SASA) with `dot_solvent`. |
-| *None (unexposed)* | `cmd.get_sasa_relative` | **candidate (safe)** | Per-residue relative solvent accessibility. |
+| `calculate_sasa` | `cmd.get_area` (dot_solvent=1) | **implemented/tested** | Calculates total & per-residue absolute SASA (Å²) and relative accessibility RSA (%) via Tien et al. (2013). |
+| `map_sasa_to_structure` | `cmd.get_area(load_b=1)` + `cmd.spectrum` | **implemented/tested** | Loads atomic SASA into B-factor column and renders continuous color spectrum on surface/cartoon. |
+| `compare_sasa` | Composite SASA | **implemented/tested** | Computes per-residue Delta SASA = SASA(obj1) - SASA(obj2) between conformational states. |
 
 ### 10 Editing and mutations
 | Copilot Tool | PyMOL API / PML | Status | Capabilities & Security Policy |
@@ -153,7 +163,8 @@ PyMOL AI Copilot strictly enforces an allowlist architecture. The agent never ex
 
 ## 3. Registered Tool Coverage Summary
 
-- **Total Registered Tools in GLOBAL_REGISTRY:** 35 tools
-- **Test Suite Coverage:** 58 automated unit, integration, and live acceptance tests (100% pass rate)
-- **All 35 tools are strictly typed, parameter-validated, and mapped to specific PyMOL APIs.**
+- **Total Registered Tools in GLOBAL_REGISTRY:** 47 tools (35 foundational + 12 Phase 4 advanced structural biology tools)
+- **Workflows Supported:** 10 deterministic reference workflows (WF01–WF10)
+- **Test Suite Coverage:** 100+ automated unit, integration, scientific validation, and live acceptance tests (100% pass rate)
+- **All 47 tools are strictly typed, parameter-validated, and mapped to specific PyMOL APIs.**
 

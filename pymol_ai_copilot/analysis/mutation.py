@@ -191,55 +191,190 @@ class MutationAnalyzer:
         self,
         wildtype_object: str,
         mutant_object: str,
+        mutation_str: str = "",
         chain: str = "A",
-        resi: Optional[str] = None
+        radius: float = 5.0
     ) -> Dict[str, Any]:
         """
-        Compare wild-type and mutant structures: alignment, global RMSD, local mutation RMSD, and contact differences.
+        Compare wild-type and mutant structures: sequence-aware alignment, local environment
+        reorganization, contact network changes, and geometric displacement quantification.
         """
+        parsed = self.parse_mutation_string(mutation_str) if mutation_str else {}
+        target_resi = parsed.get("resi")
+        target_chain = chain or parsed.get("chain") or "A"
+
         def _exec():
-            # Align mutant onto wildtype
-            align_res = self.cmd.align(mutant_object, wildtype_object)
-            global_rmsd = round(float(align_res[0]), 3)
+            all_names = self.cmd.get_names("all")
+            if wildtype_object not in all_names:
+                raise ValueError(f"Wild-type structure '{wildtype_object}' does not exist.")
+            if mutant_object not in all_names:
+                raise ValueError(f"Mutant structure '{mutant_object}' does not exist.")
 
+            # Validate chain presence
+            wt_chains = self.cmd.get_chains(wildtype_object)
+            mut_chains = self.cmd.get_chains(mutant_object)
+            if target_chain not in wt_chains:
+                raise ValueError(f"Chain '{target_chain}' not found in wild-type '{wildtype_object}' (available: {wt_chains}).")
+            if target_chain not in mut_chains:
+                raise ValueError(f"Chain '{target_chain}' not found in mutant '{mutant_object}' (available: {mut_chains}).")
+
+            # Sequence-aware structural superposition
+            align_res = self.cmd.align(
+                f"model {mutant_object} and chain '{target_chain}'",
+                f"model {wildtype_object} and chain '{target_chain}'",
+                cycles=5,
+                cutoff=2.0
+            )
+            global_rmsd = round(float(align_res[0]), 4)
+            aligned_atoms = int(align_res[1])
+
+            # Local analysis at mutation site
             local_analysis = None
-            if resi:
-                wt_res_sel = f"model {wildtype_object} and chain {chain} and resi {resi}"
-                mut_res_sel = f"model {mutant_object} and chain {chain} and resi {resi}"
+            if target_resi:
+                wt_res_sel = f"model {wildtype_object} and chain '{target_chain}' and resi '{target_resi}' and not elem H"
+                mut_res_sel = f"model {mutant_object} and chain '{target_chain}' and resi '{target_resi}' and not elem H"
 
-                if self.cmd.count_atoms(wt_res_sel) > 0 and self.cmd.count_atoms(mut_res_sel) > 0:
-                    # In-place coordinate RMSD of CA atom
-                    ca_rmsd = round(float(self.cmd.rms_cur(f"({wt_res_sel}) and name CA", f"({mut_res_sel}) and name CA")), 3)
+                wt_atom_count = self.cmd.count_atoms(wt_res_sel)
+                mut_atom_count = self.cmd.count_atoms(mut_res_sel)
 
-                    # In-place backbone RMSD
-                    bb_rmsd = round(float(self.cmd.rms_cur(f"({wt_res_sel}) and name N+CA+C+O", f"({mut_res_sel}) and name N+CA+C+O")), 3)
+                if wt_atom_count == 0:
+                    raise ValueError(f"Residue position {target_resi} (chain {target_chain}) does not exist in wild-type '{wildtype_object}'.")
+                if mut_atom_count == 0:
+                    raise ValueError(f"Residue position {target_resi} (chain {target_chain}) does not exist in mutant '{mutant_object}'. Do not fabricate coordinates.")
 
-                    # Get residue identities
-                    wt_resn = []
-                    mut_resn = []
-                    self.cmd.iterate(wt_res_sel, "wt_resn.append(resn)", space={"wt_resn": wt_resn})
-                    self.cmd.iterate(mut_res_sel, "mut_resn.append(resn)", space={"mut_resn": mut_resn})
+                # Residue identities
+                wt_resn_list = []
+                mut_resn_list = []
+                self.cmd.iterate(f"({wt_res_sel}) and name CA", "wt_resn_list.append(resn)", space={"wt_resn_list": wt_resn_list})
+                self.cmd.iterate(f"({mut_res_sel}) and name CA", "mut_resn_list.append(resn)", space={"mut_resn_list": mut_resn_list})
+                wt_resn = wt_resn_list[0] if wt_resn_list else "UNK"
+                mut_resn = mut_resn_list[0] if mut_resn_list else "UNK"
 
-                    local_analysis = {
-                        "resi": resi,
-                        "chain": chain,
-                        "wildtype_resn": wt_resn[0] if wt_resn else "UNK",
-                        "mutant_resn": mut_resn[0] if mut_resn else "UNK",
-                        "ca_displacement_angstroms": ca_rmsd,
-                        "backbone_rmsd_angstroms": bb_rmsd
-                    }
+                # C-alpha displacement
+                ca_disp = 0.0
+                wt_ca = []
+                mut_ca = []
+                self.cmd.iterate_state(1, f"({wt_res_sel}) and name CA", "wt_ca.append((x, y, z))", space={"wt_ca": wt_ca})
+                self.cmd.iterate_state(1, f"({mut_res_sel}) and name CA", "mut_ca.append((x, y, z))", space={"mut_ca": mut_ca})
+                if wt_ca and mut_ca:
+                    ca_disp = round(float(np.linalg.norm(np.array(wt_ca[0]) - np.array(mut_ca[0]))), 4)
+
+                # Backbone RMSD (N, CA, C, O) computed in NumPy
+                bb_atoms = ["N", "CA", "C", "O"]
+                wt_bb_coords = {}
+                mut_bb_coords = {}
+                self.cmd.iterate_state(1, f"({wt_res_sel}) and name N+CA+C+O", "wt_bb_coords[name] = (x, y, z)", space={"wt_bb_coords": wt_bb_coords})
+                self.cmd.iterate_state(1, f"({mut_res_sel}) and name N+CA+C+O", "mut_bb_coords[name] = (x, y, z)", space={"mut_bb_coords": mut_bb_coords})
+
+                common_bb = [name for name in bb_atoms if name in wt_bb_coords and name in mut_bb_coords]
+                if common_bb:
+                    c_wt = np.array([wt_bb_coords[n] for n in common_bb])
+                    c_mut = np.array([mut_bb_coords[n] for n in common_bb])
+                    bb_rmsd = round(float(np.sqrt(np.mean(np.sum((c_wt - c_mut)**2, axis=-1)))), 4)
+                else:
+                    bb_rmsd = 0.0
+
+                # Neighbor environment within radius
+                wt_nbr_sel = f"byres (model {wildtype_object} and chain '{target_chain}' within {radius} of ({wt_res_sel})) and not ({wt_res_sel}) and name CA"
+                mut_nbr_sel = f"byres (model {mutant_object} and chain '{target_chain}' within {radius} of ({mut_res_sel})) and not ({mut_res_sel}) and name CA"
+
+                wt_nbrs = set()
+                mut_nbrs = set()
+                self.cmd.iterate(wt_nbr_sel, "wt_nbrs.add((resi, resn))", space={"wt_nbrs": wt_nbrs})
+                self.cmd.iterate(mut_nbr_sel, "mut_nbrs.add((resi, resn))", space={"mut_nbrs": mut_nbrs})
+
+                wt_nbr_resis = {r[0] for r in wt_nbrs}
+                mut_nbr_resis = {r[0] for r in mut_nbrs}
+
+                common_nbrs = sorted(wt_nbr_resis & mut_nbr_resis, key=lambda x: int(x) if x.isdigit() else x)
+                lost_nbrs = sorted(wt_nbr_resis - mut_nbr_resis, key=lambda x: int(x) if x.isdigit() else x)
+                gained_nbrs = sorted(mut_nbr_resis - wt_nbr_resis, key=lambda x: int(x) if x.isdigit() else x)
+
+                # Compute mean neighbor C-alpha displacement
+                nbr_displacements = []
+                for n_resi in common_nbrs:
+                    c1 = []
+                    c2 = []
+                    self.cmd.iterate_state(1, f"model {wildtype_object} and chain '{target_chain}' and resi '{n_resi}' and name CA", "c1.append((x, y, z))", space={"c1": c1})
+                    self.cmd.iterate_state(1, f"model {mutant_object} and chain '{target_chain}' and resi '{n_resi}' and name CA", "c2.append((x, y, z))", space={"c2": c2})
+                    if c1 and c2:
+                        nbr_displacements.append(float(np.linalg.norm(np.array(c1[0]) - np.array(c2[0]))))
+
+                mean_nbr_disp = round(float(np.mean(nbr_displacements)), 4) if nbr_displacements else 0.0
+
+                # Polar contact networks computed in NumPy
+                def _calc_polar_contacts(obj_name, r_sel):
+                    res_coords = []
+                    self.cmd.iterate_state(1, f"({r_sel}) and elem N+O", "res_coords.append((x, y, z))", space={"res_coords": res_coords})
+                    nbr_coords = []
+                    self.cmd.iterate_state(
+                        1,
+                        f"byres (model {obj_name} within {radius} of ({r_sel})) and not ({r_sel}) and elem N+O",
+                        "nbr_coords.append((x, y, z))",
+                        space={"nbr_coords": nbr_coords}
+                    )
+                    if not res_coords or not nbr_coords:
+                        return 0
+                    arr_res = np.array(res_coords)
+                    arr_nbr = np.array(nbr_coords)
+                    dists = np.linalg.norm(arr_res[:, None, :] - arr_nbr[None, :, :], axis=-1)
+                    return int(np.sum(dists <= 3.5))
+
+                wt_polar_count = _calc_polar_contacts(wildtype_object, wt_res_sel)
+                mut_polar_count = _calc_polar_contacts(mutant_object, mut_res_sel)
+
+                local_analysis = {
+                    "position": target_resi,
+                    "chain": target_chain,
+                    "wildtype_residue": wt_resn,
+                    "mutant_residue": mut_resn,
+                    "ca_displacement_angstrom": ca_disp,
+                    "backbone_rmsd_angstrom": bb_rmsd,
+                    "neighbor_radius_angstrom": float(radius),
+                    "wildtype_neighbors_count": len(wt_nbr_resis),
+                    "mutant_neighbors_count": len(mut_nbr_resis),
+                    "common_neighbors_count": len(common_nbrs),
+                    "lost_neighbors": lost_nbrs,
+                    "gained_neighbors": gained_nbrs,
+                    "mean_neighbor_ca_displacement_angstrom": mean_nbr_disp,
+                    "wildtype_polar_contacts_count": wt_polar_count,
+                    "mutant_polar_contacts_count": mut_polar_count,
+                    "polar_contacts_delta": mut_polar_count - wt_polar_count
+                }
+
+                # Styling for visual comparison
+                self.cmd.show("cartoon", f"model {wildtype_object} or model {mutant_object}")
+                self.cmd.color("cyan", f"model {wildtype_object}")
+                self.cmd.color("orange", f"model {mutant_object}")
+                self.cmd.show("sticks", f"({wt_res_sel}) or ({mut_res_sel})")
+                self.cmd.util.cnc(f"({wt_res_sel}) or ({mut_res_sel})")
+                self.cmd.zoom(f"({wt_res_sel}) expand 6.0")
+
+            # Determine structure origin (experimental vs predicted model)
+            origin_type = "predicted_model" if ("af-" in wildtype_object.lower() or "alphafold" in wildtype_object.lower()) else "experimental_structure"
 
             return {
                 "wildtype_object": wildtype_object,
                 "mutant_object": mutant_object,
-                "global_alignment_rmsd": global_rmsd,
-                "aligned_atoms": int(align_res[1]),
+                "chain": target_chain,
+                "global_chain_rmsd_angstrom": global_rmsd,
+                "aligned_atoms": aligned_atoms,
+                "structure_origin": origin_type,
                 "local_mutation_comparison": local_analysis,
-                "scientific_interpretation": (
-                    f"Superposition of '{mutant_object}' onto '{wildtype_object}' yields a global RMSD of {global_rmsd} Å. "
-                    + (f"Local Cα displacement at position {resi} is {local_analysis['ca_displacement_angstroms']} Å." if local_analysis else "")
+                "scientific_limitation": (
+                    "Geometric structural differences indicate local packing and electrostatic rearrangement, "
+                    "but do NOT predict thermodynamic stability changes (ddG), folding kinetics, or biological function "
+                    "without experimental binding/stability assays or free-energy simulations."
                 )
             }
 
-        return self.executor.run_safe(_exec)
+        res = self.executor.run_safe(_exec)
+        self.executor.record_command(
+            f"# compare_wildtype_and_mutant {wildtype_object} vs {mutant_object}",
+            "compare_wildtype_and_mutant",
+            {"wildtype_object": wildtype_object, "mutant_object": mutant_object, "mutation_str": mutation_str},
+            res
+        )
+        return res
+
 

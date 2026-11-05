@@ -643,6 +643,62 @@ class TestReferenceWorkflows(unittest.TestCase):
         self.assertEqual(rec_fail.state, WorkflowState.FAILED)
         self.assertFalse(rec_fail.validation_gates_passed)
 
+    def test_wf03_advanced_scientific_reporting_and_ambiguous_chains(self):
+        """WF03: Verify explicit metric distinction (global Ca, refined Ca, refined all-atom) and ambiguous assembly handling."""
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        cmd.load(os.path.join(data_dir, "1ake.pdb"), "rpt_1ake")
+        cmd.load(os.path.join(data_dir, "4ake.pdb"), "rpt_4ake")
+
+        # 1. Verify metric distinction and residue correspondence
+        res = GLOBAL_CAPABILITY_REGISTRY.execute("align_structures", {
+            "mobile": "rpt_1ake",
+            "target": "rpt_4ake",
+            "mobile_chain": "A",
+            "target_chain": "A",
+            "cycles": 5,
+            "cutoff": 2.0
+        })
+        self.assertTrue(res["success"])
+        self.assertAlmostEqual(res["rmsd_global_ca"], 7.1307, delta=0.001)
+        self.assertAlmostEqual(res["rmsd_refined_ca"], 1.6663, delta=0.001)
+        self.assertAlmostEqual(res["rmsd_refined_all_atom"], 2.0691, delta=0.001)
+        self.assertEqual(res["aligned_ca_atoms"], 214)
+        self.assertEqual(res["refined_ca_atoms"], 140)
+        self.assertEqual(res["aligned_all_atoms"], 1135)
+        self.assertEqual(res["matched_residues"], 214)
+        self.assertEqual(res["refined_core_residues"], 152)
+        self.assertIn("residue_correspondence", res)
+        self.assertEqual(res["residue_correspondence_count"], 152)
+        self.assertEqual(res["residue_correspondence"][0]["mobile"], "A:MET1")
+        self.assertEqual(res["residue_correspondence"][0]["target"], "A:MET1")
+
+        # 2. Ambiguous multi-chain assembly test: disjoint chains ['A', 'B'] vs ['C', 'D']
+        cmd.copy("rpt_cd", "rpt_4ake")
+        cmd.alter("rpt_cd and chain A", "chain='C'")
+        cmd.alter("rpt_cd and chain B", "chain='D'")
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF03")
+
+        # Without explicit chain, must fail requiring clarification
+        rec_amb = wf.execute_deterministic({
+            "mobile": "rpt_1ake",
+            "target": "rpt_cd"
+        })
+        self.assertEqual(rec_amb.state, WorkflowState.FAILED)
+        self.assertIn("Ambiguous biological assembly", rec_amb.error)
+
+        # With explicit chain correspondence, must succeed
+        rec_resolved = wf.execute_deterministic({
+            "mobile": "rpt_1ake",
+            "target": "rpt_cd",
+            "mobile_chain": "A",
+            "target_chain": "C"
+        })
+        self.assertEqual(rec_resolved.state, WorkflowState.COMPLETED)
+        meas = rec_resolved.scientific_measurements
+        self.assertAlmostEqual(meas["rmsd_global_ca"], 7.1307, delta=0.001)
+        self.assertEqual(meas["mobile_chain"], "A")
+        self.assertEqual(meas["target_chain"], "C")
+
 
 if __name__ == "__main__":
     unittest.main()

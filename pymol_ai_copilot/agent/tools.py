@@ -10,6 +10,10 @@ from typing import Any, Dict, List, Optional, Union
 from ..analysis.alignment import StructureAligner
 from ..analysis.contacts import ContactAnalyzer
 from ..analysis.mutation import MutationAnalyzer
+from ..analysis.ligand import LigandAnalyzer
+from ..analysis.sasa import SASAAnalyzer
+from ..analysis.epitope import EpitopeMapper
+from ..analysis.batch import BatchStructureAnalyzer
 from ..config import CONFIG
 from ..pymol_bridge.executor import PyMOLExecutor
 from ..pymol_bridge.structure_inspector import StructureInspector
@@ -25,6 +29,10 @@ class ToolContext:
         self.aligner = StructureAligner(self.executor)
         self.contacts = ContactAnalyzer(self.executor)
         self.mutations = MutationAnalyzer(self.executor)
+        self.ligand = LigandAnalyzer(self.executor)
+        self.sasa = SASAAnalyzer(self.executor)
+        self.epitope = EpitopeMapper(self.executor)
+        self.batch = BatchStructureAnalyzer(self.executor)
 
 
 GLOBAL_CONTEXT = ToolContext()
@@ -175,9 +183,27 @@ def tool_select_residues(selection_name: str, selection_expr: str) -> Dict[str, 
         return {"success": False, "error": str(e)}
 
 
-def tool_highlight_residues(selection: str, representation: str = "sticks", color: str = "yellow") -> Dict[str, Any]:
+def tool_highlight_residues(selection: str = "", residues: Optional[Any] = None, representation: str = "sticks", color: str = "yellow") -> Dict[str, Any]:
     """Highlight residues using a specific representation and distinct color."""
     try:
+        if not selection and residues:
+            if isinstance(residues, list):
+                parts = []
+                for item in residues:
+                    if isinstance(item, dict):
+                        ch = item.get("chain", "")
+                        ri = item.get("resi") or item.get("residue_number", "")
+                        if ch and ri:
+                            parts.append(f"(chain '{ch}' and resi '{ri}')")
+                        elif ri:
+                            parts.append(f"resi '{ri}'")
+                    elif isinstance(item, str):
+                        parts.append(f"resi '{item}'")
+                selection = " or ".join(parts) if parts else "all"
+            elif isinstance(residues, str):
+                selection = residues
+        if not selection:
+            selection = "all"
         GLOBAL_CONTEXT.executor.show_representation(representation, selection)
         GLOBAL_CONTEXT.executor.color_selection(color, selection)
         return {"success": True, "highlighted": selection, "representation": representation, "color": color}
@@ -185,10 +211,29 @@ def tool_highlight_residues(selection: str, representation: str = "sticks", colo
         return {"success": False, "error": str(e)}
 
 
-def tool_label_residues(selection: str, label_type: str = "resn_resi", label: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+def tool_label_residues(selection: str = "", label_type: str = "resn_resi", label: Optional[str] = None, residues: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
     """Label residues with identifier text (resn_resi, resi, or custom)."""
     effective_type = label if label is not None else label_type
     try:
+        if not selection and residues:
+            if isinstance(residues, list):
+                parts = []
+                for item in residues:
+                    if isinstance(item, dict):
+                        ch = item.get("chain", "")
+                        ri = item.get("resi") or item.get("residue_number", "")
+                        if ch and ri:
+                            parts.append(f"(chain '{ch}' and resi '{ri}')")
+                        elif ri:
+                            parts.append(f"resi '{ri}'")
+                    elif isinstance(item, str):
+                        parts.append(f"resi '{item}'")
+                selection = " or ".join(parts) if parts else "all"
+            elif isinstance(residues, str):
+                selection = residues
+        if not selection:
+            selection = kwargs.get("target") or kwargs.get("target_selection") or "all"
+
         def _exec():
             if effective_type == "resn_resi":
                 GLOBAL_CONTEXT.executor.cmd.label(selection, '"%s%s" % (resn, resi)')
@@ -530,4 +575,278 @@ def tool_export_analysis_csv(filename: str, rows: List[Dict[str, Any]], headers:
         return {"success": True, "filepath": path, "row_count": len(rows)}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# F. Phase 4: Advanced Structural Biology Tools
+# ============================================================================
+
+# --- Ligand Interaction Analysis Tools ---
+
+def tool_identify_ligands(object_name: str) -> Dict[str, Any]:
+    """Identify bound ligands in a structure, distinguishing them from additives and solvent."""
+    try:
+        res = GLOBAL_CONTEXT.ligand.identify_ligands(object_name)
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_analyze_ligand_interactions(
+    object_name: str,
+    ligand_resn: str = "",
+    ligand_resi: str = "",
+    ligand_chain: str = "",
+    cutoff: float = 4.0,
+    altloc: str = "A"
+) -> Dict[str, Any]:
+    """Analyze contacting residues, minimum heavy-atom distances, and polar contacts for a ligand."""
+    try:
+        res = GLOBAL_CONTEXT.ligand.analyze_ligand_interactions(
+            object_name=object_name,
+            ligand_resn=ligand_resn,
+            ligand_resi=ligand_resi,
+            ligand_chain=ligand_chain,
+            cutoff=float(cutoff),
+            altloc=altloc
+        )
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_visualize_ligand_pocket(
+    object_name: str,
+    ligand_resn: str,
+    ligand_resi: str = "",
+    ligand_chain: str = "",
+    cutoff: float = 4.0,
+    show_contacts: bool = True
+) -> Dict[str, Any]:
+    """Render publication-grade visualization of ligand binding pocket with dashes for polar contacts."""
+    try:
+        res = GLOBAL_CONTEXT.ligand.visualize_ligand_pocket(
+            object_name=object_name,
+            ligand_resn=ligand_resn,
+            ligand_resi=ligand_resi,
+            ligand_chain=ligand_chain,
+            cutoff=float(cutoff),
+            show_contacts=bool(show_contacts)
+        )
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_export_ligand_contacts(
+    object_name: str,
+    output_path: str,
+    ligand_resn: str = "",
+    ligand_resi: str = "",
+    cutoff: float = 4.0,
+    format: str = "json"
+) -> Dict[str, Any]:
+    """Export ligand contact table to a JSON or CSV file."""
+    try:
+        analysis = GLOBAL_CONTEXT.ligand.analyze_ligand_interactions(
+            object_name=object_name,
+            ligand_resn=ligand_resn,
+            ligand_resi=ligand_resi,
+            cutoff=float(cutoff)
+        )
+        path = output_path if os.path.isabs(output_path) else os.path.join(CONFIG.export_dir, output_path)
+        res = GLOBAL_CONTEXT.ligand.export_contacts_table(analysis, path, format)
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# --- Solvent Accessibility (SASA) Tools ---
+
+def tool_calculate_sasa(
+    object_name: str,
+    selection: str = "",
+    probe_radius: float = 1.4,
+    dot_density: int = 2
+) -> Dict[str, Any]:
+    """Calculate absolute SASA (Å²) and relative solvent accessibility (RSA %) per residue."""
+    try:
+        res = GLOBAL_CONTEXT.sasa.calculate_sasa(
+            object_name=object_name,
+            selection=selection,
+            probe_radius=float(probe_radius),
+            dot_density=int(dot_density)
+        )
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_map_sasa_to_structure(
+    object_name: str,
+    selection: str = "",
+    probe_radius: float = 1.4,
+    palette: str = "blue_white_red",
+    representation: str = "surface"
+) -> Dict[str, Any]:
+    """Load atomic SASA into B-factors and color the molecular surface or cartoon by accessibility."""
+    try:
+        res = GLOBAL_CONTEXT.sasa.map_sasa_to_structure(
+            object_name=object_name,
+            selection=selection,
+            probe_radius=float(probe_radius),
+            palette=palette,
+            representation=representation
+        )
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_compare_sasa(
+    object1: str,
+    object2: str,
+    chain1: str = "A",
+    chain2: str = "A",
+    probe_radius: float = 1.4
+) -> Dict[str, Any]:
+    """Compare residue SASA between two structures (e.g. apo vs holo, or wild-type vs mutant)."""
+    try:
+        res = GLOBAL_CONTEXT.sasa.compare_sasa(
+            object1=object1,
+            object2=object2,
+            chain1=chain1,
+            chain2=chain2,
+            probe_radius=float(probe_radius)
+        )
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_export_sasa_table(
+    object_name: str,
+    output_path: str,
+    selection: str = "",
+    probe_radius: float = 1.4,
+    format: str = "json"
+) -> Dict[str, Any]:
+    """Calculate and export residue SASA / RSA table to a JSON or CSV file."""
+    try:
+        sasa_data = GLOBAL_CONTEXT.sasa.calculate_sasa(object_name, selection, probe_radius)
+        path = output_path if os.path.isabs(output_path) else os.path.join(CONFIG.export_dir, output_path)
+        res = GLOBAL_CONTEXT.sasa.export_sasa_table(sasa_data, path, format)
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# --- Epitope Structural Mapping Tools ---
+
+def tool_map_epitope_sequence(
+    object_name: str,
+    epitope_sequence: str = "",
+    residue_list: str = "",
+    chain: str = ""
+) -> Dict[str, Any]:
+    """Map a linear epitope sequence or residue range to 3D structure, checking accessibility and clustering."""
+    try:
+        res = GLOBAL_CONTEXT.epitope.map_epitope_sequence(
+            object_name=object_name,
+            epitope_sequence=epitope_sequence,
+            residue_list=residue_list,
+            chain=chain
+        )
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def tool_visualize_epitope(
+    object_name: str,
+    chain: str,
+    residue_numbers: Any,
+    representation: str = "surface_highlight"
+) -> Dict[str, Any]:
+    """Visualize mapped epitope locus with contrasting highlights on the protein surface or spheres."""
+    try:
+        if isinstance(residue_numbers, str):
+            res_list = [r.strip() for r in residue_numbers.replace(",", " ").split() if r.strip()]
+        else:
+            res_list = [str(r) for r in residue_numbers]
+
+        res = GLOBAL_CONTEXT.epitope.visualize_epitope(
+            object_name=object_name,
+            chain=chain,
+            residue_numbers=res_list,
+            representation=representation
+        )
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# --- WT-Mutant Structural Comparison Tool ---
+
+def tool_compare_wt_mutant(
+    wildtype_object: str,
+    mutant_object: str,
+    mutation_str: str = "",
+    chain: str = "A",
+    radius: float = 5.0
+) -> Dict[str, Any]:
+    """Compare wild-type and mutant structures: alignment, local C-alpha displacement, contact network deltas."""
+    try:
+        res = GLOBAL_CONTEXT.mutations.compare_wildtype_and_mutant(
+            wildtype_object=wildtype_object,
+            mutant_object=mutant_object,
+            mutation_str=mutation_str,
+            chain=chain,
+            radius=float(radius)
+        )
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# --- Batch Structural Analysis Tool ---
+
+def tool_batch_compare_structures(
+    structure_names: Any,
+    reference_name: str = "",
+    chain: str = "A",
+    method: str = "align",
+    output_dir: str = ""
+) -> Dict[str, Any]:
+    """Perform pairwise structural alignment across a batch of structures against a common reference."""
+    try:
+        if isinstance(structure_names, str):
+            names = [s.strip() for s in structure_names.replace(",", " ").split() if s.strip()]
+        else:
+            names = list(structure_names)
+
+        out_d = output_dir if (not output_dir or os.path.isabs(output_dir)) else os.path.join(CONFIG.export_dir, output_dir)
+        res = GLOBAL_CONTEXT.batch.batch_compare_structures(
+            structure_names=names,
+            reference_name=reference_name,
+            chain=chain,
+            method=method,
+            output_dir=out_d
+        )
+        res["success"] = True
+        return res
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 

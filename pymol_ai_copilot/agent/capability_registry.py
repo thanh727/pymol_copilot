@@ -242,11 +242,26 @@ class CapabilityRegistry:
 
         # Normalize common parameter aliases
         norm_args = dict(arguments)
+        if name in ("identify_ligands", "analyze_ligand_interactions", "visualize_ligand_pocket", "export_ligand_contacts",
+                    "calculate_sasa", "map_sasa_to_structure", "export_sasa_table", "map_epitope_sequence", "visualize_epitope"):
+            if "object_name" not in norm_args:
+                for k in ("object", "structure", "protein", "target"):
+                    if k in norm_args:
+                        norm_args["object_name"] = norm_args.pop(k)
+                        break
+
         if name in ("export_png", "save_session", "export_pml", "export_analysis_json", "export_analysis_csv"):
             if "output_path" in norm_args and "filename" not in norm_args:
                 norm_args["filename"] = norm_args.pop("output_path")
             elif "file_path" in norm_args and "filename" not in norm_args:
                 norm_args["filename"] = norm_args.pop("file_path")
+            elif "filepath" in norm_args and "filename" not in norm_args:
+                norm_args["filename"] = norm_args.pop("filepath")
+        elif name in ("export_ligand_contacts", "export_sasa_analysis", "export_sasa_table"):
+            if "filename" in norm_args and "output_path" not in norm_args:
+                norm_args["output_path"] = norm_args.pop("filename")
+            elif "file_path" in norm_args and "output_path" not in norm_args:
+                norm_args["output_path"] = norm_args.pop("file_path")
         elif name == "analyze_mutation":
             if "mutation_notation" in norm_args and "mutation_str" not in norm_args:
                 norm_args["mutation_str"] = norm_args.pop("mutation_notation")
@@ -257,6 +272,11 @@ class CapabilityRegistry:
         elif name == "label_residues":
             if "label" in norm_args and "label_type" not in norm_args:
                 norm_args["label_type"] = norm_args.pop("label")
+        elif name == "highlight_residues":
+            if "target_selection" in norm_args and "selection" not in norm_args:
+                norm_args["selection"] = norm_args.pop("target_selection")
+            elif "target" in norm_args and "selection" not in norm_args:
+                norm_args["selection"] = norm_args.pop("target")
 
         # 2. Execute underlying verified adapter
         try:
@@ -1204,6 +1224,335 @@ class CapabilityRegistry:
             requires_confirmation=False,
             status="implemented/tested",
             func=tools.tool_analyze_mutation
+        ))
+
+        # --------------------------------------------------------------------
+        # Phase 4: Advanced Structural Biology Capabilities
+        # --------------------------------------------------------------------
+
+        # 1. Ligand Interaction Analysis
+        self.register(Capability(
+            id="ligand.identify_ligands",
+            name="identify_ligands",
+            api_mapping="cmd.iterate hetero groups",
+            category="07 Ligands and contacts",
+            description="Identify bound biologically relevant ligands, distinguishing them from additives and solvent.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."}
+                },
+                "required": ["object_name"]
+            },
+            return_schema={"type": "object", "properties": {"total_ligands": {"type": "integer"}, "ligands": {"type": "array"}}},
+            preconditions=["objects_exist"],
+            postconditions=[],
+            classification="read_only",
+            risk_level="Tier A (read-only)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_identify_ligands
+        ))
+
+        self.register(Capability(
+            id="ligand.analyze_interactions",
+            name="analyze_ligand_interactions",
+            api_mapping="cmd.iterate + numpy distance matrix",
+            category="07 Ligands and contacts",
+            description="Analyze protein residues within cutoff distance of a ligand, computing minimum heavy-atom distances and polar contacts.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "ligand_resn": {"type": "string", "description": "Residue name of ligand (e.g. 'AP5')."},
+                    "ligand_resi": {"type": "string", "description": "Residue number of ligand."},
+                    "ligand_chain": {"type": "string", "description": "Chain of ligand."},
+                    "cutoff": {"type": "number", "description": "Distance cutoff in angstroms (default 4.0)."},
+                    "altloc": {"type": "string", "description": "Alternate conformation (default 'A')."}
+                },
+                "required": ["object_name"]
+            },
+            return_schema={"type": "object", "properties": {"contacting_residues_count": {"type": "integer"}, "contacts": {"type": "array"}}},
+            preconditions=["objects_exist"],
+            postconditions=[],
+            classification="read_only",
+            risk_level="Tier A (read-only)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_analyze_ligand_interactions
+        ))
+
+        self.register(Capability(
+            id="ligand.visualize_pocket",
+            name="visualize_ligand_pocket",
+            api_mapping="cmd.show sticks + cmd.distance dashes",
+            category="05 Representation and color",
+            description="Render publication-grade visualization of the ligand pocket with polar contact dashes and focused camera.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "ligand_resn": {"type": "string", "description": "Residue name of ligand."},
+                    "ligand_resi": {"type": "string", "description": "Residue number of ligand."},
+                    "ligand_chain": {"type": "string", "description": "Chain of ligand."},
+                    "cutoff": {"type": "number", "description": "Pocket radius in angstroms."},
+                    "show_contacts": {"type": "boolean", "description": "Whether to draw polar contact dashes."}
+                },
+                "required": ["object_name", "ligand_resn"]
+            },
+            return_schema={"type": "object", "properties": {"status": {"type": "string"}}},
+            preconditions=["objects_exist"],
+            postconditions=[],
+            classification="view_only",
+            risk_level="Tier B (visual)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_visualize_ligand_pocket
+        ))
+
+        self.register(Capability(
+            id="ligand.export_contacts",
+            name="export_ligand_contacts",
+            api_mapping="json.dump / csv.writer",
+            category="03 Input and output",
+            description="Export ligand contacting residues table to a JSON or CSV file.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "output_path": {"type": "string", "description": "Output file path (JSON or CSV)."},
+                    "ligand_resn": {"type": "string", "description": "Ligand residue name."},
+                    "ligand_resi": {"type": "string", "description": "Ligand residue number."},
+                    "cutoff": {"type": "number", "description": "Distance cutoff."},
+                    "format": {"type": "string", "enum": ["json", "csv"]}
+                },
+                "required": ["object_name", "output_path"]
+            },
+            return_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "output_path": {"type": "string"}}},
+            preconditions=["objects_exist"],
+            postconditions=["file_created"],
+            classification="bounded_io",
+            risk_level="Tier C (bounded-io)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_export_ligand_contacts
+        ))
+
+        # 2. Solvent Accessibility (SASA) Analysis
+        self.register(Capability(
+            id="sasa.calculate_sasa",
+            name="calculate_sasa",
+            api_mapping="cmd.get_area dot_solvent=1",
+            category="07 Ligands and contacts",
+            description="Calculate total and per-residue solvent-accessible surface area (SASA, Å²) and relative solvent accessibility (RSA, %).",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "selection": {"type": "string", "description": "Sub-selection (default all)."},
+                    "probe_radius": {"type": "number", "description": "Probe sphere radius (default 1.4 Å)."},
+                    "dot_density": {"type": "integer", "description": "Dot surface density (1-4)."}
+                },
+                "required": ["object_name"]
+            },
+            return_schema={"type": "object", "properties": {"total_sasa_angstrom2": {"type": "number"}, "residues": {"type": "array"}}},
+            preconditions=["objects_exist"],
+            postconditions=[],
+            classification="read_only",
+            risk_level="Tier A (read-only)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_calculate_sasa
+        ))
+
+        self.register(Capability(
+            id="sasa.map_sasa",
+            name="map_sasa_to_structure",
+            api_mapping="cmd.get_area load_b=1 + cmd.spectrum",
+            category="05 Representation and color",
+            description="Map atomic SASA values into B-factors and color the molecular surface or cartoon by accessibility spectrum.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "selection": {"type": "string", "description": "Sub-selection."},
+                    "probe_radius": {"type": "number", "description": "Probe radius in angstroms."},
+                    "palette": {"type": "string", "description": "Spectrum palette (e.g. 'blue_white_red')."},
+                    "representation": {"type": "string", "enum": ["surface", "cartoon"]}
+                },
+                "required": ["object_name"]
+            },
+            return_schema={"type": "object", "properties": {"status": {"type": "string"}}},
+            preconditions=["objects_exist"],
+            postconditions=[],
+            classification="view_only",
+            risk_level="Tier B (visual)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_map_sasa_to_structure
+        ))
+
+        self.register(Capability(
+            id="sasa.compare_sasa",
+            name="compare_sasa",
+            api_mapping="cmd.get_area delta calculation",
+            category="07 Ligands and contacts",
+            description="Compare residue SASA between two structures (e.g., apo vs holo, or WT vs mutant) to detect burying or exposure.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object1": {"type": "string", "description": "First PyMOL object."},
+                    "object2": {"type": "string", "description": "Second PyMOL object."},
+                    "chain1": {"type": "string", "description": "Chain for first object."},
+                    "chain2": {"type": "string", "description": "Chain for second object."},
+                    "probe_radius": {"type": "number", "description": "Probe radius."}
+                },
+                "required": ["object1", "object2"]
+            },
+            return_schema={"type": "object", "properties": {"residues_compared": {"type": "integer"}, "significant_changes_count": {"type": "integer"}}},
+            preconditions=["two_or_more_objects"],
+            postconditions=[],
+            classification="read_only",
+            risk_level="Tier A (read-only)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_compare_sasa
+        ))
+
+        self.register(Capability(
+            id="sasa.export_table",
+            name="export_sasa_table",
+            api_mapping="json.dump / csv.writer",
+            category="03 Input and output",
+            description="Calculate and export residue SASA and relative accessibility (RSA) table to a JSON or CSV file.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "output_path": {"type": "string", "description": "Output file path (JSON or CSV)."},
+                    "selection": {"type": "string", "description": "Sub-selection."},
+                    "probe_radius": {"type": "number", "description": "Probe radius in angstroms."},
+                    "format": {"type": "string", "enum": ["json", "csv"]}
+                },
+                "required": ["object_name", "output_path"]
+            },
+            return_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "output_path": {"type": "string"}}},
+            preconditions=["objects_exist"],
+            postconditions=["file_created"],
+            classification="bounded_io",
+            risk_level="Tier C (bounded-io)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_export_sasa_table
+        ))
+
+        # 3. Epitope Structural Mapping
+        self.register(Capability(
+            id="epitope.map_sequence",
+            name="map_epitope_sequence",
+            api_mapping="sequence substring matching + SASA",
+            category="07 Ligands and contacts",
+            description="Map a linear epitope sequence or residue range to 3D structure, evaluating solvent accessibility and spatial clustering.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "epitope_sequence": {"type": "string", "description": "Linear peptide sequence."},
+                    "residue_list": {"type": "string", "description": "Residue numbers or range."},
+                    "chain": {"type": "string", "description": "Chain identifier."}
+                },
+                "required": ["object_name"]
+            },
+            return_schema={"type": "object", "properties": {"mapped_residues_count": {"type": "integer"}, "is_spatially_clustered": {"type": "boolean"}}},
+            preconditions=["objects_exist"],
+            postconditions=[],
+            classification="read_only",
+            risk_level="Tier A (read-only)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_map_epitope_sequence
+        ))
+
+        self.register(Capability(
+            id="epitope.visualize_epitope",
+            name="visualize_epitope",
+            api_mapping="cmd.show surface/spheres + cmd.color",
+            category="05 Representation and color",
+            description="Highlight mapped epitope residues on the protein structure using contrasting colors and surface or sphere representations.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "chain": {"type": "string", "description": "Chain identifier."},
+                    "residue_numbers": {"type": "array", "description": "List of residue numbers.", "items": {"type": "string"}},
+                    "representation": {"type": "string", "enum": ["surface_highlight", "spheres"]}
+                },
+                "required": ["object_name", "chain", "residue_numbers"]
+            },
+            return_schema={"type": "object", "properties": {"status": {"type": "string"}}},
+            preconditions=["objects_exist"],
+            postconditions=[],
+            classification="view_only",
+            risk_level="Tier B (visual)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_visualize_epitope
+        ))
+
+        # 4. WT-Mutant Structural Comparison
+        self.register(Capability(
+            id="mutation.compare_wt_mutant",
+            name="compare_wt_mutant",
+            api_mapping="cmd.align + local environment comparison",
+            category="08 Structure alignment",
+            description="Perform sequence-aware alignment of WT and mutant structures, analyzing local C-alpha displacement and contact network changes.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "wildtype_object": {"type": "string", "description": "Name of wild-type PyMOL object."},
+                    "mutant_object": {"type": "string", "description": "Name of mutant PyMOL object."},
+                    "mutation_str": {"type": "string", "description": "Mutation notation (e.g. 'R42A')."},
+                    "chain": {"type": "string", "description": "Chain identifier."},
+                    "radius": {"type": "number", "description": "Neighborhood radius in angstroms."}
+                },
+                "required": ["wildtype_object", "mutant_object"]
+            },
+            return_schema={"type": "object", "properties": {"global_chain_rmsd_angstrom": {"type": "number"}, "local_mutation_comparison": {"type": "object"}}},
+            preconditions=["two_or_more_objects"],
+            postconditions=[],
+            classification="read_only",
+            risk_level="Tier A (read-only)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_compare_wt_mutant
+        ))
+
+        # 5. Batch Structural Analysis
+        self.register(Capability(
+            id="batch.compare_structures",
+            name="batch_compare_structures",
+            api_mapping="cmd.align across multiple structures",
+            category="08 Structure alignment",
+            description="Perform consistent pairwise structural alignment across a batch of structures against a common reference, exporting summary tables and overlay figures.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "structure_names": {"type": "array", "description": "List of loaded PyMOL object names.", "items": {"type": "string"}},
+                    "reference_name": {"type": "string", "description": "Optional reference structure."},
+                    "chain": {"type": "string", "description": "Chain to align."},
+                    "method": {"type": "string", "enum": ["align", "super", "cealign"]},
+                    "output_dir": {"type": "string", "description": "Directory to save comparison outputs."}
+                },
+                "required": ["structure_names"]
+            },
+            return_schema={"type": "object", "properties": {"total_structures_analyzed": {"type": "integer"}, "results": {"type": "array"}}},
+            preconditions=["two_or_more_objects"],
+            postconditions=[],
+            classification="read_only",
+            risk_level="Tier A (read-only)",
+            requires_confirmation=False,
+            status="implemented/tested",
+            func=tools.tool_batch_compare_structures
         ))
 
 

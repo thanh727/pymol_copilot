@@ -132,13 +132,18 @@ Seamlessly interprets user instructions in both **English** and **Vietnamese**:
 - **Structure Comparison:** Aligns structures using sequence-guided refinement (`align`), structural superposition (`super`), or combinatorial extension (`cealign`). Calculates all-atom, backbone, or $C\alpha$ RMSD.
 
 ### 6. CapabilityRegistry & Scientific Workflow Engine
-- **CapabilityRegistry:** Machine-readable catalog containing 521 PyMOL API/PML functions. Enforces strict authorization where all 486 unreviewed and blocked entries default to `LLM-disallowed`. Exposes 35 typed, parameter-validated, and tested tools across 17 functional domains with pre- and post-condition verification gates.
+- **CapabilityRegistry:** Machine-readable catalog containing 521 PyMOL API/PML functions. Enforces strict authorization where all unreviewed and blocked entries default to `LLM-disallowed`. Exposes 47 typed, parameter-validated, and tested tools across 17 functional domains with pre- and post-condition verification gates.
 - **WorkflowRegistry:** Declarative scientific workflow engine that matches user intent and extracts biological entities (PDB IDs, AlphaFold accessions, mutations like `R132H`, distance cutoffs, and chains) to dynamically scope tools:
   - **WF01 (Structure Acquisition):** Fetch PDB/AlphaFold, verify atoms and chains, apply styling, orient camera.
   - **WF02 (Structural Inspection):** Comprehensive inventory of objects, chains, sequences, organic ligands, heteroatoms, and bounding box dimensions.
   - **WF03 (Structure Comparison):** Superimpose structures, compute C-alpha RMSD, detect divergent loci, and export structured JSON.
   - **WF04 (Mutation Neighborhood):** Validate wildtype amino acid, analyze spatial contact sphere within cutoff, detect geometric polar contact candidates, and highlight.
   - **WF05 (Publication Visualization):** Coordinated publication styling, pure white background, ray-traced rendering, reproducible session (.pse) and PML script export.
+  - **WF06 (Ligand Interaction Analysis):** Identify bound organic ligands, exclude solvent/additives, calculate minimum heavy-atom distances and geometric polar contacts (< 3.5 Å), and visualize pockets.
+  - **WF07 (Solvent Accessibility Analysis):** Compute absolute SASA (Å²) with 1.4 Å probe, calculate relative RSA (%) via Tien et al. (2013), map to B-factor spectrum, and compute ΔSASA between states.
+  - **WF08 (Epitope Structural Mapping):** Map linear peptide or residue ranges, resolve sequence offsets, evaluate 3D spatial clustering, compute residue RSA, and render surface presentation.
+  - **WF09 (WT–Mutant Structural Comparison):** Sequence-aware superposition, local environment comparison within 5.0 Å, measure C-alpha/backbone displacement, analyze contact deltas, strictly without fabricating coordinates.
+  - **WF10 (Batch Structural Analysis):** Perform consistent pairwise alignments across batches (≤ 20 structures) against a reference, exporting structured comparison tables and multi-overlay figures.
 
 ### 7. Publication-Ready Visual Presets
 One-click and natural language presets:
@@ -201,7 +206,7 @@ One-click and natural language presets:
 
 ## 🧪 Testing & Verification
 
-The test suite contains 77 automated unit, mock, and PyMOL integration tests across 10 test suites:
+The test suite contains 100+ automated unit, mock, and PyMOL integration tests across 11 test suites:
 
 ```bash
 # Run all tests using PyMOL's Python interpreter
@@ -210,7 +215,7 @@ The test suite contains 77 automated unit, mock, and PyMOL integration tests acr
 
 ### Verified Test Categories:
 - `test_config.py`: Configuration persistence and path resolving.
-- `test_tool_registry.py`: Whitelist validation, schema extraction, error trapping (35 registered tools).
+- `test_tool_registry.py`: Whitelist validation, schema extraction, error trapping (47 registered tools).
 - `test_ollama_client.py`: Ollama REST API parsing (native `tool_calls`, JSON Lines, code blocks).
 - `test_analysis.py`: Mutation string parser, residue translation, contact categories.
 - `test_pymol_integration.py`: Live PyMOL headless (`-qc`) execution of representations, measurements, selections, RMSD, PNG, and PML exports.
@@ -218,7 +223,8 @@ The test suite contains 77 automated unit, mock, and PyMOL integration tests acr
 - `test_regression_phase2.py`: QA regression suite for all Phase 2 defects (insertion codes, negative residue numbers, self-contacts, PML replay).
 - `test_structure_loading_and_loop_prevention.py`: Validation of `fetch_structure`, `load_structure`, security boundaries, disambiguation, loop prevention, and recovery.
 - `test_capability_and_workflow_engine.py`: Registry loading, unreviewed tool blocking, entity resolution, and context-dependent tool scoping.
-- `test_reference_workflows.py`: End-to-end execution of all 5 reference workflows (WF01 – WF05) with real structures and provenance.
+- `test_reference_workflows.py`: End-to-end execution of foundational reference workflows (WF01 – WF05) with real structures and provenance.
+- `test_phase4_workflows.py`: Advanced structural biology workflows (WF06 – WF10), NumPy mathematical verification, and bilingual intent recognition.
 - `test_live_acceptance.py`: End-to-end multi-step validation with real local Ollama models (`qwen2.5-coder:7b` & `gemma4:latest`).
 
 ---

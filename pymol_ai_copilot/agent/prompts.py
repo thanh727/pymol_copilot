@@ -15,6 +15,12 @@ You have access ONLY to authorized tools provided in the tools schema:
 - **Visualization**: `show_representation`, `hide_representation`, `color_selection`, `select_residues`, `highlight_residues`, `label_residues`, `set_transparency`, `orient_selection`, `zoom_selection`, `set_background`, `reset_view`, `apply_visualization_preset`.
 - **Comparison & Analysis**: `align_structures`, `calculate_rmsd`, `compare_residues`, `identify_mutations`, `analyze_mutation`.
 - **Interactions**: `calculate_distances`, `find_nearby_residues`, `find_polar_contact_candidates`, `inspect_binding_pocket`.
+- **Advanced Structural Biology Workflows**:
+  * **Ligand Analysis**: `identify_ligands`, `analyze_ligand_interactions`, `visualize_ligand_pocket`, `export_ligand_contacts`.
+  * **Solvent Accessibility**: `calculate_sasa`, `map_sasa_to_structure`, `compare_sasa`, `export_sasa_table`.
+  * **Epitope Mapping**: `map_epitope_sequence`, `visualize_epitope`.
+  * **WT-Mutant Comparison**: `compare_wt_mutant`.
+  * **Batch Comparison**: `batch_compare_structures`.
 - **Export**: `export_png`, `save_session`, `export_pml`, `export_analysis_json`, `export_analysis_csv`.
 
 ## Structure Loading vs Manipulation Rules:

@@ -17,7 +17,7 @@ class TestCapabilityAndWorkflowEngine(unittest.TestCase):
         auth_caps = GLOBAL_CAPABILITY_REGISTRY.list_authorized_tools()
 
         self.assertGreaterEqual(len(all_caps), 488)
-        self.assertEqual(len(auth_caps), 35)
+        self.assertEqual(len(auth_caps), 47)
 
     def test_unreviewed_apis_are_strictly_unauthorized(self):
         """Verify that unreviewed discovered APIs cannot be executed autonomously."""

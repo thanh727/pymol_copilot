@@ -2,7 +2,7 @@
 
 **Date:** November 2026  
 **Environment:** PyMOL 3.1.0 Open-Source (Homebrew `arm64`), Python 3.14.3, macOS 27.2, Ollama (`qwen2.5-coder:7b`, `gemma4:latest`)  
-**Baseline:** 521 cataloged PyMOL API/PML functions | 35 authorized, typed tools | 5 verified deterministic reference workflows | 89 automated tests passing (100% pass rate)  
+**Baseline:** 521 cataloged PyMOL API/PML functions | 47 authorized, typed tools | 10 verified deterministic reference workflows | 100+ automated tests passing (100% pass rate)  
 
 ---
 
@@ -19,7 +19,7 @@ In compliance with the project's security architecture:
 
 ## 2. Implemented & Verified Scientific Workflows
 
-The following five reference workflows are fully implemented, tested in headless PyMOL, and validated with local Ollama models:
+The following ten reference workflows are fully implemented, tested in headless PyMOL, and validated with local Ollama models:
 
 | Workflow ID | Name | User Intent Keywords | Required Capabilities | Verification Status |
 | :---: | :--- | :--- | :--- | :---: |
@@ -28,6 +28,11 @@ The following five reference workflows are fully implemented, tested in headless
 | **WF03** | **Structure Comparison** | `compare`, `align`, `rmsd`, `superimpose`, `so sánh`, `căn chỉnh`, `tính rmsd` | `list_objects`, `get_chains`, `align_structures`, `calculate_rmsd`, `compare_residues`, `color_selection`, `export_analysis_json` | **Implemented & Tested** |
 | **WF04** | **Mutation Neighborhood** | `mutation`, `analyze mutation`, `neighborhood`, `đột biến`, `phân tích đột biến`, `lân cận` | `list_objects`, `analyze_mutation`, `identify_mutations`, `find_nearby_residues`, `find_polar_contact_candidates`, `highlight_residues`, `label_residues`, `orient_selection` | **Implemented & Tested** |
 | **WF05** | **Publication Visualization** | `publication`, `figure`, `render`, `export image`, `chất lượng xuất bản`, `xuất hình`, `chụp ảnh` | `apply_visualization_preset`, `show_representation`, `color_selection`, `set_background`, `set_transparency`, `orient_selection`, `zoom_selection`, `export_png`, `save_session`, `export_pml` | **Implemented & Tested** |
+| **WF06** | **Ligand Interaction Analysis** | `ligand`, `binding pocket`, `contacts`, `chất gắn`, `túi gắn`, `tương tác` | `list_objects`, `identify_ligands`, `analyze_ligand_interactions`, `visualize_ligand_pocket`, `export_ligand_contacts` | **Implemented & Tested** |
+| **WF07** | **Solvent Accessibility Analysis** | `sasa`, `solvent accessibility`, `rsa`, `diện tích tiếp xúc`, `độ bộc lộ`, `dung môi` | `list_objects`, `calculate_sasa`, `map_sasa_to_structure`, `compare_sasa`, `export_sasa_analysis` | **Implemented & Tested** |
+| **WF08** | **Epitope Structural Mapping** | `epitope`, `antigen`, `linear epitope`, `biểu vị`, `kháng nguyên`, `ánh xạ epitope` | `list_objects`, `get_chains`, `map_epitope_sequence`, `visualize_epitope`, `calculate_sasa` | **Implemented & Tested** |
+| **WF09** | **WT–Mutant Structural Comparison** | `wt vs mutant`, `compare mutant`, `so sánh đột biến`, `đối chiếu đột biến`, `wildtype mutant` | `list_objects`, `compare_wt_mutant`, `align_structures`, `calculate_rmsd`, `show_representation`, `color_selection` | **Implemented & Tested** |
+| **WF10** | **Batch Structural Analysis** | `batch`, `batch align`, `multiple structures`, `hàng loạt`, `nhiều cấu trúc`, `tập hợp` | `list_objects`, `batch_compare_structures`, `export_analysis_csv`, `export_analysis_json` | **Implemented & Tested** |
 
 ### Detailed Workflow Architecture:
 
@@ -92,11 +97,74 @@ The following five reference workflows are fully implemented, tested in headless
   6. Export reproducible session state (`.pse`) and command macro script (`.pml`).
 - **Postcondition Gates:** Output PNG and session files exist on disk with file size $> 0$ bytes.
 
+#### WF06 — Ligand Interaction Analysis
+- **Intent Recognition:** Keywords `ligand`, `binding pocket`, `contacts`, `chất gắn`, `túi gắn`.
+- **Precondition Gates:** Target protein loaded with at least one bound non-polymer organic ligand.
+- **Deterministic Steps:**
+  1. Enumerate all hetero groups; classify and exclude solvents (HOH, WAT), crystallization additives (PEG, EDO, GOL, DMS, MPD), and buffer ions.
+  2. Isolate target organic ligand (handling alternate conformation `alt ''+A`).
+  3. Extract pairwise Cartesian coordinates and calculate minimum heavy-atom distances to protein residues.
+  4. Identify geometric polar contact candidates ($\le 3.5\text{ \AA}$ donor/acceptor pairs).
+  5. Apply publication pocket visualization: cartoon receptor, thick sticks for ligand (yellow carbons), sticks for pocket residues (cyan carbons), and dashed yellow distance lines.
+  6. Export structured contact table to JSON or CSV.
+- **Postcondition Gates:** Valid non-empty contact table returned; polar contact count calculated.
+- **Scientific Limitation:** Proximity ($\le 4.0\text{ \AA}$) indicates structural neighborhood and geometric polar contact candidates, but does NOT constitute thermodynamic proof of binding affinity or free energy.
+
+#### WF07 — Solvent Accessibility Analysis
+- **Intent Recognition:** Keywords `sasa`, `solvent accessibility`, `rsa`, `dung môi`, `tiếp xúc dung môi`.
+- **Precondition Gates:** Target protein loaded in PyMOL session.
+- **Deterministic Steps:**
+  1. Configure PyMOL surface area calculation (`dot_solvent=1`, `solvent_radius=1.4`).
+  2. Compute total and atomic SASA via `cmd.get_area(load_b=1)`.
+  3. Aggregate atomic SASA into per-residue totals and compute Relative Solvent Accessibility (RSA %) against Tien et al. (2013) MaxSASA constants.
+  4. Categorize residues into buried ($< 20\%$), intermediate ($20-50\%$), and exposed ($> 50\%$).
+  5. Map atomic SASA into B-factor column and display continuous spectrum on molecular surface or cartoon.
+  6. Compute per-residue $\Delta\text{SASA}$ between conformational states (e.g. open vs closed).
+- **Postcondition Gates:** Total SASA $> 0\text{ \AA}^2$; residue classification counts populated.
+- **Scientific Limitation:** Absolute SASA reflects static crystal coordinates; conformational breathing and crystal packing should be evaluated.
+
+#### WF08 — Epitope Structural Mapping
+- **Intent Recognition:** Keywords `epitope`, `antigen`, `linear epitope`, `biểu vị`, `kháng nguyên`.
+- **Precondition Gates:** Target protein loaded; specified linear peptide or residue list exists in sequence.
+- **Deterministic Steps:**
+  1. Map linear peptide sequence against protein chains, resolving sequence numbering offsets.
+  2. Extract $C\alpha$ coordinates and compute 3D spatial centroid and maximal diameter in NumPy.
+  3. Evaluate spatial clustering: linear continuity versus 3D globular dispersion.
+  4. Compute residue-level solvent accessibility (RSA %) for all epitope residues.
+  5. Render publication visualization: contrasting surface highlight or sticks on receptor.
+- **Postcondition Gates:** 1-to-1 residue mapping established; spatial centroid and diameter computed.
+- **Scientific Limitation:** Surface exposure alone does NOT establish antigenicity, antibody binding affinity, or in vivo immunogenicity without serological assays.
+
+#### WF09 — WT–Mutant Structural Comparison
+- **Intent Recognition:** Keywords `wt vs mutant`, `compare mutant`, `so sánh đột biến`, `đột biến so với wildtype`.
+- **Precondition Gates:** Both wild-type and mutant structures loaded in session.
+- **Deterministic Steps:**
+  1. Verify presence of designated target chains in both structures.
+  2. Superimpose mutant onto wild-type model via sequence-aware alignment with outlier rejection.
+  3. Locate mutation position in both models; strictly verify coordinates exist without fabricating missing atoms.
+  4. Calculate $C\alpha$ displacement and backbone RMSD ($N, C\alpha, C, O$) in NumPy.
+  5. Measure local environment reorganization within $5.0\text{ \AA}$: common, gained, and lost neighbors.
+  6. Quantify polar contact network deltas.
+- **Postcondition Gates:** Global RMSD and local geometric displacement metrics calculated.
+- **Scientific Limitation:** Geometric structural differences indicate local packing and electrostatic rearrangement, but do NOT predict thermodynamic stability changes ($\Delta\Delta G$).
+
+#### WF10 — Batch Structural Analysis
+- **Intent Recognition:** Keywords `batch`, `batch align`, `multiple structures`, `hàng loạt`, `tập hợp cấu trúc`.
+- **Precondition Gates:** At least 2 structures loaded in session (maximum 20 structures).
+- **Deterministic Steps:**
+  1. Validate batch size ($\le 20$ objects) to enforce execution safety and memory bounds.
+  2. Designate reference structure (explicit or defaults to first object).
+  3. Iterate across remaining structures, performing consistent pairwise structural alignment (`cycles=5, cutoff=2.0`).
+  4. Extract global $C\alpha$ RMSD, aligned atom counts, and alignment coverage per structure.
+  5. Generate consolidated comparative metrics table and export to CSV, JSON, PNG multi-overlay, and PSE session.
+- **Postcondition Gates:** Batch results list populated with consistent metrics across all structures.
+- **Scientific Limitation:** Rigid-body pairwise fitting against a single reference does not replace multimeric assembly analysis or flexible ensemble clustering.
+
 ---
 
 ## 3. Tool Coverage & PyMOL API Mapping
 
-All 35 registered tools map directly to underlying PyMOL APIs and are cataloged in `CapabilityRegistry`:
+All 47 registered tools map directly to underlying PyMOL APIs and are cataloged in `CapabilityRegistry`:
 
 | Tool Name | Capability ID | Underlying API | Risk Tier | Classification |
 | :--- | :--- | :--- | :---: | :--- |
@@ -135,6 +203,18 @@ All 35 registered tools map directly to underlying PyMOL APIs and are cataloged 
 | `compare_residues` | `align.compare_residues` | NumPy distance matrix | Tier A | Read-Only |
 | `identify_mutations` | `align.identify_mutations` | Sequence alignment + coords | Tier A | Read-Only |
 | `analyze_mutation` | `mutation.analyze_mutation` | Inspector + contacts | Tier A | Read-Only |
+| `identify_ligands` | `ligand.identify_ligands` | `cmd.iterate` + additive filters | Tier A | Read-Only |
+| `analyze_ligand_interactions` | `ligand.analyze_interactions` | Cartesian pairwise Euclidean | Tier A | Read-Only |
+| `visualize_ligand_pocket` | `ligand.visualize_pocket` | Composite styling + contacts | Tier B | View-Only |
+| `export_ligand_contacts` | `ligand.export_contacts` | Tabular JSON/CSV exporter | Tier C | Bounded I/O |
+| `calculate_sasa` | `sasa.calculate_sasa` | `cmd.get_area(dot_solvent=1)` | Tier A | Read-Only |
+| `map_sasa_to_structure` | `sasa.map_to_structure` | `cmd.get_area(load_b=1)` + `spectrum` | Tier B | View-Only |
+| `compare_sasa` | `sasa.compare_sasa` | Per-residue Delta SASA | Tier A | Read-Only |
+| `export_sasa_analysis` | `sasa.export_table` | Tabular JSON/CSV exporter | Tier C | Bounded I/O |
+| `map_epitope_sequence` | `epitope.map_sequence` | Sequence alignment + NumPy centroid | Tier A | Read-Only |
+| `visualize_epitope` | `epitope.visualize` | Surface highlight presentation | Tier B | View-Only |
+| `compare_wt_mutant` | `mutation.compare_wt_mutant` | Structural superposition + deltas | Tier A | Read-Only |
+| `batch_compare_structures` | `batch.batch_compare` | Pairwise alignment engine (max 20) | Tier A | Read-Only |
 
 ---
 

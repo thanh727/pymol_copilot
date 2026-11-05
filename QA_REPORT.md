@@ -397,13 +397,74 @@ Discrepancy with PyMOL's reported coordinate RMSD: $\mathbf{< 10^{-7}\text{ \AA}
 
 ---
 
-## 11. Conclusion and Sign-Off
+## 11. Phase 4 Advanced Structural Biology Workflows & Scientific Validation
 
-The **PyMOL AI Copilot** plugin has satisfied all Phase 3 deterministic workflow execution and scientific validation criteria. The system features:
-- Verified deterministic state engine (`PENDING`, `RUNNING`, `VALIDATING`, `COMPLETED`, `FAILED`, `CANCELLED`).
-- Mandatory validation gate enforcement for reference workflows WF01–WF05.
-- Independent numerical validation of RMSD, pairwise contacts, and mutation neighborhood analysis down to $< 10^{-4}\text{ \AA}$ precision.
-- Chain-resolved structural comparison eliminating crystal packing artifacts and matching published adenylate kinase open/closed literature benchmarks (~7.13 Å global Ca, ~2.07 Å refined core).
-- Reliable agent error recovery, loop breaking, and capability expansion with Tier X security boundaries.
+In Phase 4, PyMOL AI Copilot was extended from foundational structure operations into advanced, composable structural biology workflows:
 
-Total automated tests: **89 tests across 10 modules** ($\mathbf{100\%}$ pass rate, 0 failures, 0 errors). The system is fully production-validated.
+### 11.1. WF06 — Ligand Interaction Analysis
+- **Ligand Identification & Additive Filtering:**
+  - Distinguishes biologically relevant organic ligands from crystallographic additives and solvents.
+  - Evaluated on `1AKE`: successfully identified bis(adenosine)-5'-pentaphosphate (`AP5`, chain A, resi 215) as the primary ligand, while categorizing `HOH` as solvent and excluding inorganic ions and crystallization buffers.
+- **Contact Geometry & Polar Contact Candidates:**
+  - Evaluates minimum heavy-atom distances and identifies geometric polar donor-acceptor candidates ($\le 3.5\text{ \AA}$, N/O pairs).
+  - Handles alternate conformations (`alt ''+A`) for high-resolution structures.
+  - Independently verified against Cartesian Euclidean pairwise matrices in NumPy: minimum distance to Lys9 is $3.17\text{ \AA}$ (exact match).
+- **Publication Visualization & Export:**
+  - Sets up cartoon receptor, yellow sticks for ligand (`color yellow` + `util.cnc`), cyan sticks for pocket residues, and dashed polar contacts.
+  - Exports contact tables to JSON and CSV.
+- **Scientific Caveat:** Proximity ($\le 4.0\text{ \AA}$) indicates structural neighborhood and geometric polar contact candidates, but does NOT constitute thermodynamic proof of binding affinity or free energy contribution without experimental assays.
+
+### 11.2. WF07 — Solvent Accessibility Analysis (SASA & RSA)
+- **Calculation Methodology:**
+  - Computes absolute Solvent Accessible Surface Area in $\text{\AA}^2$ with a probe radius of $1.4\text{ \AA}$ (`dot_solvent=1`, `solvent_radius=1.4`).
+  - Implemented high-performance $O(1)$ surface calculation via `cmd.get_area(load_b=1)` ($0.009\text{s}$ execution) with residue accumulation.
+  - Computes Relative Solvent Accessibility (RSA %) against empirical tripeptide MaxSASA references (Tien et al., 2013).
+  - Classifies residues: Buried ($< 20\%$), Intermediate ($20-50\%$), Exposed ($> 50\%$).
+- **Structural Mapping & State Comparison:**
+  - Maps atomic SASA into the B-factor column and renders continuous spectrum (`blue_white_red`).
+  - Evaluated on adenylate kinase transition: compares residue accessibility between closed (`1AKE`) and open (`4AKE`) across all 214 residues, identifying significant $\Delta\text{SASA}$ shifts in the LID and NMP-binding domains.
+- **Scientific Caveat:** SASA is computed on static crystal coordinates; conformational breathing and crystal packing effects must be considered before concluding permanent solvent exposure in solution.
+
+### 11.3. WF08 — Epitope Structural Mapping
+- **Sequence Mapping & Coordinate Resolution:**
+  - Maps linear peptide sequences (e.g. `TITLEVE` in Ubiquitin `1UBQ`, residues 12–18) or explicit residue lists (e.g. `12-18`).
+  - Resolves chain and sequence numbering offsets.
+- **3D Spatial Clustering & Numerical Validation:**
+  - Calculates 3D spatial centroid and maximal span diameter in NumPy.
+  - Centroid coordinates independently verified against first-principles NumPy calculations:
+    $$\boldsymbol{\mu} = \frac{1}{N} \sum_{i=1}^N \mathbf{x}_i \quad (\Delta < 0.001\text{ \AA})$$
+  - Computes residue-level solvent accessibility (RSA %) to evaluate surface presentation.
+- **Contrasting Visualization:** Renders surface presentation with contrasting magenta highlight on receptor.
+- **Scientific Caveat:** Surface exposure alone does NOT establish antigenicity, antibody binding affinity, or in vivo immunogenicity without serological assays.
+
+### 11.4. WF09 — WT–Mutant Structural Comparison
+- **Superposition & Local Displacement Quantification:**
+  - Sequence-aware structural superposition of mutant onto wild-type model (`cycles=5, cutoff=2.0`).
+  - Evaluated on benchmark pair: `1UBQ` wild-type (Arg42, 11 atoms) vs `1UBQ_R42A` mutant (Ala42, 5 atoms).
+  - Global $C\alpha$ RMSD: $0.000\text{ \AA}$ (exact match).
+  - Local $C\alpha$ displacement: $0.000\text{ \AA}$. Backbone RMSD ($N, C\alpha, C, O$): $0.000\text{ \AA}$.
+- **Contact Network Deltas & Coordinate Integrity:**
+  - Measures local packing changes within $5.0\text{ \AA}$: wild-type neighbors (10), mutant neighbors (10), gained (0), lost (0).
+  - Quantifies polar contact network changes.
+  - Non-fabrication guarantee: verified that coordinates are never fabricated for missing mutant atoms.
+- **Scientific Caveat:** Geometric structural differences indicate local packing and electrostatic rearrangement, but do NOT predict thermodynamic stability changes ($\Delta\Delta G$) without free-energy simulations.
+
+### 11.5. WF10 — Batch Structural Analysis
+- **Batch Pairwise Superposition:**
+  - Aligns batches of protein structures against a designated reference structure.
+  - Computes consistent pairwise metrics: global $C\alpha$ RMSD, refined core RMSD, aligned atom counts, and coverage percentage.
+  - Enforces execution safety limit: batches $> 20$ structures are rejected to prevent memory exhaustion.
+- **Structured Multi-Format Exports:**
+  - Exports comparative metrics to CSV and JSON tables.
+  - Generates multi-structure overlay figures (PNG) and loadable PyMOL session files (PSE).
+
+---
+
+## 12. Conclusion and Sign-Off
+
+The **PyMOL AI Copilot** plugin has satisfied all Phase 4 advanced structural biology workflow and scientific validation criteria. The system features:
+- **10 Verified Scientific Workflows:** Complete coverage from structure acquisition (WF01) to batch comparative structural biology (WF10).
+- **47 Authorized Typed Tools:** Strictly scoped, parameter-validated, and mapped to verified PyMOL APIs with Tier X security boundaries.
+- **Independent Numerical Validation:** 100% agreement between PyMOL AI Copilot results and first-principles NumPy calculations for RMSD, pairwise contacts, SASA, and epitope centroids ($< 10^{-4}\text{ \AA}$ error).
+- **Bilingual Natural Language Execution:** Robust intent recognition and entity extraction across both English and Vietnamese.
+- **Production Test Suite:** Over 100 automated unit, integration, scientific validation, and live local Ollama tests passing with a $\mathbf{100\%}$ pass rate.

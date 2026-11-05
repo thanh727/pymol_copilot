@@ -19,6 +19,38 @@ class StructureAligner:
     def cmd(self):
         return self.executor.cmd
 
+    def _extract_alignment_details(self, aln_obj: str, mob_sel: str, tgt_sel: str, mobile: str, target: str):
+        """Extract unique matched residues and 1-to-1 residue correspondence from alignment object."""
+        try:
+            raw_aln = self.cmd.get_raw_alignment(aln_obj)
+            m_atoms = {}
+            t_atoms = {}
+            self.cmd.iterate(mob_sel, "m_atoms[index] = (chain, resi, resn)", space={"m_atoms": m_atoms})
+            self.cmd.iterate(tgt_sel, "t_atoms[index] = (chain, resi, resn)", space={"t_atoms": t_atoms})
+
+            pairs = []
+            seen = set()
+            m_resis = set()
+            for p1, p2 in raw_aln:
+                m_info, t_info = None, None
+                for model, idx in (p1, p2):
+                    if model == mobile and idx in m_atoms:
+                        m_info = m_atoms[idx]
+                    elif model == target and idx in t_atoms:
+                        t_info = t_atoms[idx]
+                if m_info and t_info:
+                    pair_key = (m_info, t_info)
+                    if pair_key not in seen:
+                        seen.add(pair_key)
+                        m_resis.add(m_info)
+                        pairs.append({
+                            "mobile": f"{m_info[0]}:{m_info[2]}{m_info[1]}",
+                            "target": f"{t_info[0]}:{t_info[2]}{t_info[1]}"
+                        })
+            return len(m_resis), pairs
+        except Exception:
+            return 0, []
+
     def _count_matched_residues(self, aln_obj: str, mob_sel: str, mobile: str) -> int:
         """Count unique residues present in a PyMOL alignment object."""
         try:
@@ -87,19 +119,24 @@ class StructureAligner:
                 aln_obj = f"_aln_{mobile}_{target}"
                 res = self.cmd.align(mob_sel, tgt_sel, cutoff=float(cutoff), cycles=int(cycles), object=aln_obj)
                 # res returns: (rmsd, atoms_aligned, cycles, rmsd_raw, n_atoms)
-                rmsd_refined = round(float(res[0]), 4)
+                rmsd_refined_all_atom = round(float(res[0]), 4)
                 atoms_aligned = int(res[1])
                 cycles_run = int(res[2])
-                rmsd_raw = round(float(res[3]), 4) if len(res) > 3 else rmsd_refined
+                rmsd_raw_all_atom = round(float(res[3]), 4) if len(res) > 3 else rmsd_refined_all_atom
                 total_atoms = int(res[4]) if len(res) > 4 else atoms_aligned
 
-                matched_residues = self._count_matched_residues(aln_obj, mob_sel, mobile)
+                matched_residues, correspondence = self._extract_alignment_details(aln_obj, mob_sel, tgt_sel, mobile, target)
                 self.cmd.delete(aln_obj)
 
                 # Compute unrefined global Ca RMSD (cycles=0) for transparent reporting
-                res_ca = self.cmd.align(f"({mob_sel}) and name CA", f"({tgt_sel}) and name CA", cycles=0)
-                rmsd_global_ca = round(float(res_ca[0]), 4)
-                aligned_ca_count = int(res_ca[1])
+                res_ca_global = self.cmd.align(f"({mob_sel}) and name CA", f"({tgt_sel}) and name CA", cycles=0)
+                rmsd_global_ca = round(float(res_ca_global[0]), 4)
+                aligned_ca_count = int(res_ca_global[1])
+
+                # Compute refined Ca RMSD with outlier rejection cycles
+                res_ca_refined = self.cmd.align(f"({mob_sel}) and name CA", f"({tgt_sel}) and name CA", cutoff=float(cutoff), cycles=int(cycles))
+                rmsd_refined_ca = round(float(res_ca_refined[0]), 4)
+                refined_ca_atoms = int(res_ca_refined[1])
 
                 return {
                     "method": "align (sequence-guided structural refinement)",
@@ -107,33 +144,45 @@ class StructureAligner:
                     "target": target,
                     "mobile_chain": mobile_chain or "all",
                     "target_chain": target_chain or "all",
-                    "rmsd": rmsd_refined,
-                    "rmsd_refined_core": rmsd_refined,
+                    "rmsd": rmsd_refined_all_atom,
+                    "rmsd_refined_core": rmsd_refined_all_atom,
+                    "rmsd_refined_all_atom": rmsd_refined_all_atom,
+                    "rmsd_refined_ca": rmsd_refined_ca,
                     "rmsd_global_ca": rmsd_global_ca,
+                    "rmsd_raw_all_atom": rmsd_raw_all_atom,
                     "rmsd_units": "Å",
                     "aligned_atoms": atoms_aligned,
+                    "aligned_all_atoms": atoms_aligned,
                     "total_initial_atoms": total_atoms,
                     "aligned_ca_atoms": aligned_ca_count,
-                    "matched_residues": matched_residues or aligned_ca_count,
+                    "refined_ca_atoms": refined_ca_atoms,
+                    "matched_residues": aligned_ca_count,
+                    "refined_core_residues": matched_residues,
+                    "residue_correspondence_count": len(correspondence),
+                    "residue_correspondence": correspondence,
                     "cycles": cycles_run,
-                    "rmsd_raw": rmsd_raw,
+                    "rmsd_raw": rmsd_raw_all_atom,
                     "cutoff_applied": cutoff
                 }
             elif m == "super":
                 aln_obj = f"_sup_{mobile}_{target}"
                 res = self.cmd.super(mob_sel, tgt_sel, cutoff=float(cutoff), cycles=int(cycles), object=aln_obj)
-                rmsd_refined = round(float(res[0]), 4)
+                rmsd_refined_all_atom = round(float(res[0]), 4)
                 atoms_aligned = int(res[1])
                 cycles_run = int(res[2])
-                rmsd_raw = round(float(res[3]), 4) if len(res) > 3 else rmsd_refined
+                rmsd_raw_all_atom = round(float(res[3]), 4) if len(res) > 3 else rmsd_refined_all_atom
                 total_atoms = int(res[4]) if len(res) > 4 else atoms_aligned
 
-                matched_residues = self._count_matched_residues(aln_obj, mob_sel, mobile)
+                matched_residues, correspondence = self._extract_alignment_details(aln_obj, mob_sel, tgt_sel, mobile, target)
                 self.cmd.delete(aln_obj)
 
-                res_ca = self.cmd.super(f"({mob_sel}) and name CA", f"({tgt_sel}) and name CA", cycles=0)
-                rmsd_global_ca = round(float(res_ca[0]), 4)
-                aligned_ca_count = int(res_ca[1])
+                res_ca_global = self.cmd.super(f"({mob_sel}) and name CA", f"({tgt_sel}) and name CA", cycles=0)
+                rmsd_global_ca = round(float(res_ca_global[0]), 4)
+                aligned_ca_count = int(res_ca_global[1])
+
+                res_ca_refined = self.cmd.super(f"({mob_sel}) and name CA", f"({tgt_sel}) and name CA", cutoff=float(cutoff), cycles=int(cycles))
+                rmsd_refined_ca = round(float(res_ca_refined[0]), 4)
+                refined_ca_atoms = int(res_ca_refined[1])
 
                 return {
                     "method": "super (sequence-independent structural superposition)",
@@ -141,23 +190,34 @@ class StructureAligner:
                     "target": target,
                     "mobile_chain": mobile_chain or "all",
                     "target_chain": target_chain or "all",
-                    "rmsd": rmsd_refined,
-                    "rmsd_refined_core": rmsd_refined,
+                    "rmsd": rmsd_refined_all_atom,
+                    "rmsd_refined_core": rmsd_refined_all_atom,
+                    "rmsd_refined_all_atom": rmsd_refined_all_atom,
+                    "rmsd_refined_ca": rmsd_refined_ca,
                     "rmsd_global_ca": rmsd_global_ca,
+                    "rmsd_raw_all_atom": rmsd_raw_all_atom,
                     "rmsd_units": "Å",
                     "aligned_atoms": atoms_aligned,
+                    "aligned_all_atoms": atoms_aligned,
                     "total_initial_atoms": total_atoms,
                     "aligned_ca_atoms": aligned_ca_count,
-                    "matched_residues": matched_residues or aligned_ca_count,
+                    "refined_ca_atoms": refined_ca_atoms,
+                    "matched_residues": aligned_ca_count,
+                    "refined_core_residues": matched_residues,
+                    "residue_correspondence_count": len(correspondence),
+                    "residue_correspondence": correspondence,
                     "cycles": cycles_run,
-                    "rmsd_raw": rmsd_raw,
+                    "rmsd_raw": rmsd_raw_all_atom,
                     "cutoff_applied": cutoff
                 }
             elif m == "cealign":
-                res = self.cmd.cealign(tgt_sel, mob_sel)
+                aln_obj = f"_ce_{mobile}_{target}"
+                res = self.cmd.cealign(tgt_sel, mob_sel, object=aln_obj)
                 # cealign returns dict with 'RMSD', 'alignment_length'
                 rmsd_ce = round(float(res.get("RMSD", 0.0)), 4)
                 aln_len = int(res.get("alignment_length", 0))
+                matched_residues, correspondence = self._extract_alignment_details(aln_obj, mob_sel, tgt_sel, mobile, target)
+                self.cmd.delete(aln_obj)
                 return {
                     "method": "cealign (combinatorial extension)",
                     "mobile": mobile,
@@ -166,11 +226,18 @@ class StructureAligner:
                     "target_chain": target_chain or "all",
                     "rmsd": rmsd_ce,
                     "rmsd_refined_core": rmsd_ce,
+                    "rmsd_refined_all_atom": rmsd_ce,
+                    "rmsd_refined_ca": rmsd_ce,
                     "rmsd_global_ca": rmsd_ce,
                     "rmsd_units": "Å",
                     "aligned_atoms": aln_len,
+                    "aligned_all_atoms": aln_len,
+                    "aligned_ca_atoms": aln_len,
+                    "refined_ca_atoms": aln_len,
                     "alignment_length": aln_len,
-                    "matched_residues": aln_len
+                    "matched_residues": matched_residues or aln_len,
+                    "residue_correspondence_count": len(correspondence) or aln_len,
+                    "residue_correspondence": correspondence
                 }
             else:
                 raise ValueError(f"Unknown alignment method: '{method}'. Choose 'align', 'super', or 'cealign'.")

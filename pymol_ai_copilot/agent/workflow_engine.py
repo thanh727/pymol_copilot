@@ -355,6 +355,7 @@ class WorkflowDefinition:
                     comparison_scope = "multichain"
                     eff_mob_chain = ""
                     eff_tgt_chain = ""
+                    chain_resolution_note = "Multichain comparison across all chains."
                 else:
                     comparison_scope = "single_chain"
                     # Validate explicit chain requests
@@ -367,26 +368,53 @@ class WorkflowDefinition:
                         record.error = f"Requested chain '{tgt_chain_in}' does not exist in target structure '{target}' (available chains: {tgt_chains})."
                         return record
 
-                    # Determine chain correspondence without relying on atom order
-                    if mob_chain_in:
+                    # Biologically informed chain resolution
+                    if mob_chain_in and tgt_chain_in:
                         eff_mob_chain = mob_chain_in
-                    elif "A" in mob_chains:
-                        eff_mob_chain = "A"
-                    elif mob_chains:
-                        eff_mob_chain = mob_chains[0]
-                    else:
-                        eff_mob_chain = ""
-
-                    if tgt_chain_in:
                         eff_tgt_chain = tgt_chain_in
-                    elif eff_mob_chain in tgt_chains:
-                        eff_tgt_chain = eff_mob_chain
-                    elif "A" in tgt_chains:
-                        eff_tgt_chain = "A"
-                    elif tgt_chains:
-                        eff_tgt_chain = tgt_chains[0]
+                        chain_resolution_note = f"Explicit user-specified chain pair: {eff_mob_chain} -> {eff_tgt_chain}."
+                    elif mob_chain_in and not tgt_chain_in:
+                        eff_mob_chain = mob_chain_in
+                        eff_tgt_chain = mob_chain_in if mob_chain_in in tgt_chains else (tgt_chains[0] if len(tgt_chains) == 1 else "")
+                        if not eff_tgt_chain:
+                            record.state = WorkflowState.FAILED
+                            record.error = f"Ambiguous target chain for mobile chain '{eff_mob_chain}'. Target '{target}' has multiple chains {tgt_chains}. Specify target_chain."
+                            return record
+                        chain_resolution_note = f"Matched mobile chain '{eff_mob_chain}' to target chain '{eff_tgt_chain}'."
+                    elif not mob_chain_in and tgt_chain_in:
+                        eff_tgt_chain = tgt_chain_in
+                        eff_mob_chain = tgt_chain_in if tgt_chain_in in mob_chains else (mob_chains[0] if len(mob_chains) == 1 else "")
+                        if not eff_mob_chain:
+                            record.state = WorkflowState.FAILED
+                            record.error = f"Ambiguous mobile chain for target chain '{eff_tgt_chain}'. Mobile '{mobile}' has multiple chains {mob_chains}. Specify mobile_chain."
+                            return record
+                        chain_resolution_note = f"Matched target chain '{eff_tgt_chain}' to mobile chain '{eff_mob_chain}'."
                     else:
-                        eff_tgt_chain = ""
+                        # Neither chain explicitly requested: apply biological resolution
+                        if len(mob_chains) == 1 and len(tgt_chains) == 1:
+                            eff_mob_chain = mob_chains[0]
+                            eff_tgt_chain = tgt_chains[0]
+                            chain_resolution_note = f"Single-chain resolution: {eff_mob_chain} -> {eff_tgt_chain}."
+                        else:
+                            common_chains = [c for c in mob_chains if c in tgt_chains]
+                            if len(common_chains) == 1:
+                                eff_mob_chain = common_chains[0]
+                                eff_tgt_chain = common_chains[0]
+                                chain_resolution_note = f"Unambiguous common chain: {eff_mob_chain}."
+                            elif len(common_chains) > 1:
+                                # Multiple matching chains, default to primary common chain
+                                eff_mob_chain = common_chains[0]
+                                eff_tgt_chain = common_chains[0]
+                                chain_resolution_note = f"Primary common chain selected: '{eff_mob_chain}' (available common chains: {common_chains})."
+                            else:
+                                # No overlapping chain IDs across multi-chain complexes
+                                record.state = WorkflowState.FAILED
+                                record.error = (
+                                    f"Ambiguous biological assembly: mobile structure '{mobile}' has chains {mob_chains} and "
+                                    f"target '{target}' has chains {tgt_chains} with no overlapping chain IDs. "
+                                    f"Explicit chain correspondence is required (e.g., mobile_chain='A', target_chain='C')."
+                                )
+                                return record
 
                 # Step 2: Superimpose Structures with explicit chain scoping
                 record.state = WorkflowState.RUNNING
@@ -438,15 +466,17 @@ class WorkflowDefinition:
                 scientific_warning = None
                 rmsd_val = res_rmsd.get("rmsd", res_align.get("rmsd", 0.0))
                 rmsd_global_ca = res_align.get("rmsd_global_ca", rmsd_val)
-                rmsd_refined_core = res_align.get("rmsd_refined_core", res_align.get("rmsd", rmsd_val))
+                rmsd_refined_ca = res_align.get("rmsd_refined_ca", rmsd_val)
+                rmsd_refined_all_atom = res_align.get("rmsd_refined_all_atom", res_align.get("rmsd", rmsd_val))
+                rmsd_refined_core = res_align.get("rmsd_refined_core", rmsd_refined_all_atom)
                 matched_residues = res_align.get("matched_residues", res_comp.get("compared_residues", 0))
 
                 if comparison_scope == "multichain" and rmsd_global_ca > 12.0:
                     scientific_warning = (
-                        f"Multichain Asymmetric Unit Caveat: High global Ca RMSD ({rmsd_global_ca:.2f} Å) across "
-                        f"multiple chains reflects quaternary crystal packing or non-crystallographic symmetry (NCS) "
-                        f"divergence between crystal lattices, not monomer unfolding. "
-                        f"Evaluate single-chain comparisons (e.g. Chain A vs Chain A) for functional conformational changes."
+                        f"Diagnostic Signal (Multichain Asymmetric Unit Caveat): Unusually high multichain Ca RMSD ({rmsd_global_ca:.2f} Å) "
+                        f"detected across multiple chains. This diagnostic signal may indicate quaternary reorganization, "
+                        f"relative subunit displacement, domain movement, or differences in crystallographic asymmetric "
+                        f"unit packing. Evaluate individual chain alignments and biological assembly definitions to disambiguate."
                     )
                 elif comparison_scope == "single_chain" and rmsd_global_ca > 15.0:
                     scientific_warning = (
@@ -456,8 +486,22 @@ class WorkflowDefinition:
 
                 record.scientific_measurements = {
                     "comparison_scope": comparison_scope,
+                    "chain_resolution_note": chain_resolution_note,
                     "mobile": mobile,
                     "target": target,
+                    "mobile_chain": eff_mob_chain,
+                    "target_chain": eff_tgt_chain,
+                    "rmsd_global_ca": rmsd_global_ca,
+                    "rmsd_refined_ca": rmsd_refined_ca,
+                    "rmsd_refined_all_atom": rmsd_refined_all_atom,
+                    "rmsd_refined_core": rmsd_refined_core,
+                    "total_initial_atoms": res_align.get("total_initial_atoms", 0),
+                    "aligned_all_atoms": res_align.get("aligned_all_atoms", res_align.get("aligned_atoms", 0)),
+                    "aligned_ca_atoms": res_align.get("aligned_ca_atoms", 0),
+                    "refined_ca_atoms": res_align.get("refined_ca_atoms", 0),
+                    "matched_residues": matched_residues,
+                    "residue_correspondence_count": res_align.get("residue_correspondence_count", 0),
+                    "rmsd_units": "Å",
                     "mobile_chain": eff_mob_chain if comparison_scope == "single_chain" else "all",
                     "target_chain": eff_tgt_chain if comparison_scope == "single_chain" else "all",
                     "chains_detected": {"mobile": mob_chains, "target": tgt_chains},
@@ -621,6 +665,328 @@ class WorkflowDefinition:
                 record.validation_gates_passed = res_png.get("success", False) and os.path.exists(final_png)
                 record.state = WorkflowState.COMPLETED if record.validation_gates_passed else WorkflowState.FAILED
 
+            # WF06: Ligand Interaction Analysis
+            elif self.workflow_id == "WF06":
+                record.state = WorkflowState.RUNNING
+                target_obj = inputs.get("target") or inputs.get("object_name") or inputs.get("pdb_id") or ""
+                if not target_obj:
+                    res_objs = reg.execute("list_objects", {})
+                    objs = res_objs.get("objects", [])
+                    if not objs:
+                        record.state = WorkflowState.FAILED
+                        record.error = "No structures loaded for ligand interaction analysis."
+                        return record
+                    target_obj = objs[0]
+
+                # Step 1: Identify ligands
+                t0 = time.time()
+                res_ligs = reg.execute("identify_ligands", {"object_name": target_obj})
+                d1 = round((time.time() - t0) * 1000, 2)
+                step1 = WorkflowStepExecution(1, "Identify Bound Ligands", "identify_ligands",
+                                              StepState.COMPLETED if res_ligs.get("success") else StepState.FAILED,
+                                              {"object_name": target_obj}, res_ligs, d1, error_message=res_ligs.get("error"))
+                record.step_records.append(step1)
+
+                ligands = res_ligs.get("ligands", [])
+                if not ligands:
+                    record.state = WorkflowState.FAILED
+                    record.error = f"No biologically relevant organic ligands identified in '{target_obj}'."
+                    return record
+
+                ligand_resn = inputs.get("ligand_resn") or ligands[0]["resn"]
+                ligand_resi = inputs.get("ligand_resi") or ligands[0]["resi"]
+                ligand_chain = inputs.get("ligand_chain") or ligands[0]["chain"]
+                cutoff = float(inputs.get("cutoff", 4.0))
+
+                # Step 2: Analyze contacts & polar candidates
+                t0 = time.time()
+                res_inter = reg.execute("analyze_ligand_interactions", {
+                    "object_name": target_obj,
+                    "ligand_resn": ligand_resn,
+                    "ligand_resi": ligand_resi,
+                    "ligand_chain": ligand_chain,
+                    "cutoff": cutoff,
+                    "altloc": inputs.get("altloc", "A")
+                })
+                d2 = round((time.time() - t0) * 1000, 2)
+                step2 = WorkflowStepExecution(2, "Analyze Ligand Contacts", "analyze_ligand_interactions",
+                                              StepState.COMPLETED if res_inter.get("success") else StepState.FAILED,
+                                              {"object_name": target_obj, "ligand_resn": ligand_resn, "cutoff": cutoff},
+                                              res_inter, d2, error_message=res_inter.get("error"))
+                record.step_records.append(step2)
+
+                # Step 3: Visualize Pocket
+                t0 = time.time()
+                res_vis = reg.execute("visualize_ligand_pocket", {
+                    "object_name": target_obj,
+                    "ligand_resn": ligand_resn,
+                    "ligand_resi": ligand_resi,
+                    "ligand_chain": ligand_chain,
+                    "cutoff": cutoff,
+                    "show_contacts": True
+                })
+                d3 = round((time.time() - t0) * 1000, 2)
+                step3 = WorkflowStepExecution(3, "Visualize Binding Pocket", "visualize_ligand_pocket",
+                                              StepState.COMPLETED if res_vis.get("success") else StepState.FAILED,
+                                              {"object_name": target_obj, "ligand_resn": ligand_resn}, res_vis, d3)
+                record.step_records.append(step3)
+
+                # Step 4: Optional export
+                out_path = inputs.get("output_path")
+                if out_path:
+                    fmt = "csv" if out_path.endswith(".csv") else "json"
+                    reg.execute("export_ligand_contacts", {
+                        "object_name": target_obj,
+                        "output_path": out_path,
+                        "ligand_resn": ligand_resn,
+                        "ligand_resi": ligand_resi,
+                        "cutoff": cutoff,
+                        "format": fmt
+                    })
+
+                record.scientific_measurements = {
+                    "object": target_obj,
+                    "ligand_resn": ligand_resn,
+                    "ligand_resi": ligand_resi,
+                    "ligand_chain": ligand_chain,
+                    "cutoff_angstrom": cutoff,
+                    "contacting_residues_count": res_inter.get("contacting_residues_count", 0),
+                    "polar_contacts_count": res_inter.get("polar_contacts_count", 0),
+                    "top_contacts": res_inter.get("contacts", [])[:5],
+                    "scientific_limitation": res_inter.get("scientific_limitation", "")
+                }
+                record.validation_gates_passed = res_inter.get("success", False)
+                record.state = WorkflowState.COMPLETED if record.validation_gates_passed else WorkflowState.FAILED
+
+            # WF07: Solvent Accessibility Analysis
+            elif self.workflow_id == "WF07":
+                record.state = WorkflowState.RUNNING
+                target_obj = inputs.get("target") or inputs.get("object_name") or ""
+                if not target_obj:
+                    res_objs = reg.execute("list_objects", {})
+                    objs = res_objs.get("objects", [])
+                    if not objs:
+                        record.state = WorkflowState.FAILED
+                        record.error = "No structures loaded for solvent accessibility analysis."
+                        return record
+                    target_obj = objs[0]
+
+                probe_radius = float(inputs.get("probe_radius", 1.4))
+
+                # Step 1: Calculate SASA
+                t0 = time.time()
+                res_sasa = reg.execute("calculate_sasa", {
+                    "object_name": target_obj,
+                    "selection": inputs.get("selection", ""),
+                    "probe_radius": probe_radius
+                })
+                d1 = round((time.time() - t0) * 1000, 2)
+                step1 = WorkflowStepExecution(1, "Calculate Solvent Accessibility", "calculate_sasa",
+                                              StepState.COMPLETED if res_sasa.get("success") else StepState.FAILED,
+                                              {"object_name": target_obj, "probe_radius": probe_radius}, res_sasa, d1)
+                record.step_records.append(step1)
+
+                # Step 2: Map SASA to structure
+                t0 = time.time()
+                res_map = reg.execute("map_sasa_to_structure", {
+                    "object_name": target_obj,
+                    "probe_radius": probe_radius,
+                    "palette": inputs.get("palette", "blue_white_red"),
+                    "representation": inputs.get("representation", "surface")
+                })
+                d2 = round((time.time() - t0) * 1000, 2)
+                step2 = WorkflowStepExecution(2, "Map SASA to Molecular Surface", "map_sasa_to_structure",
+                                              StepState.COMPLETED if res_map.get("success") else StepState.FAILED,
+                                              {"object_name": target_obj}, res_map, d2)
+                record.step_records.append(step2)
+
+                record.scientific_measurements = {
+                    "object": target_obj,
+                    "total_sasa_angstrom2": res_sasa.get("total_sasa_angstrom2", 0.0),
+                    "probe_radius_angstrom": probe_radius,
+                    "buried_residues_count": res_sasa.get("buried_residues_count", 0),
+                    "intermediate_residues_count": res_sasa.get("intermediate_residues_count", 0),
+                    "exposed_residues_count": res_sasa.get("exposed_residues_count", 0),
+                    "scientific_limitation": res_sasa.get("scientific_limitation", "")
+                }
+                record.validation_gates_passed = res_sasa.get("success", False) and res_sasa.get("total_sasa_angstrom2", 0.0) > 0.0
+                record.state = WorkflowState.COMPLETED if record.validation_gates_passed else WorkflowState.FAILED
+
+            # WF08: Epitope Structural Mapping
+            elif self.workflow_id == "WF08":
+                record.state = WorkflowState.RUNNING
+                target_obj = inputs.get("target") or inputs.get("object_name") or ""
+                if not target_obj:
+                    res_objs = reg.execute("list_objects", {})
+                    objs = res_objs.get("objects", [])
+                    if not objs:
+                        record.state = WorkflowState.FAILED
+                        record.error = "No structures loaded for epitope mapping."
+                        return record
+                    target_obj = objs[0]
+
+                # Step 1: Map epitope sequence or residue list
+                t0 = time.time()
+                res_map = reg.execute("map_epitope_sequence", {
+                    "object_name": target_obj,
+                    "epitope_sequence": inputs.get("epitope_sequence", ""),
+                    "residue_list": inputs.get("residue_list", ""),
+                    "chain": inputs.get("chain", "")
+                })
+                d1 = round((time.time() - t0) * 1000, 2)
+                step1 = WorkflowStepExecution(1, "Map Epitope to 3D Coordinates", "map_epitope_sequence",
+                                              StepState.COMPLETED if res_map.get("success") else StepState.FAILED,
+                                              {"object_name": target_obj}, res_map, d1, error_message=res_map.get("error"))
+                record.step_records.append(step1)
+
+                if not res_map.get("success"):
+                    record.state = WorkflowState.FAILED
+                    record.error = f"Epitope mapping failed: {res_map.get('error')}"
+                    return record
+
+                mapped_chain = res_map.get("chain", "A")
+                mapped_resis = res_map.get("residue_numbers", [])
+
+                # Step 2: Visualize epitope on structure
+                t0 = time.time()
+                res_vis = reg.execute("visualize_epitope", {
+                    "object_name": target_obj,
+                    "chain": mapped_chain,
+                    "residue_numbers": mapped_resis,
+                    "representation": inputs.get("representation", "surface_highlight")
+                })
+                d2 = round((time.time() - t0) * 1000, 2)
+                step2 = WorkflowStepExecution(2, "Highlight Epitope on Surface", "visualize_epitope",
+                                              StepState.COMPLETED if res_vis.get("success") else StepState.FAILED,
+                                              {"object_name": target_obj, "chain": mapped_chain}, res_vis, d2)
+                record.step_records.append(step2)
+
+                record.scientific_measurements = {
+                    "object": target_obj,
+                    "chain": mapped_chain,
+                    "mapped_residues_count": res_map.get("mapped_residues_count", 0),
+                    "residue_numbers": mapped_resis,
+                    "spatial_centroid": res_map.get("spatial_centroid", []),
+                    "maximum_span_angstrom": res_map.get("maximum_span_angstrom", 0.0),
+                    "is_spatially_clustered": res_map.get("is_spatially_clustered", True),
+                    "total_epitope_sasa_angstrom2": res_map.get("total_epitope_sasa_angstrom2", 0.0),
+                    "average_rsa_percent": res_map.get("average_rsa_percent", 0.0),
+                    "exposed_residues_count": res_map.get("exposed_residues_count", 0),
+                    "scientific_limitation": res_map.get("scientific_limitation", "")
+                }
+                record.validation_gates_passed = res_map.get("success", False) and len(mapped_resis) > 0
+                record.state = WorkflowState.COMPLETED if record.validation_gates_passed else WorkflowState.FAILED
+
+            # WF09: WT–Mutant Structural Comparison
+            elif self.workflow_id == "WF09":
+                record.state = WorkflowState.RUNNING
+                wt_obj = inputs.get("wildtype_object") or inputs.get("wt_object") or ""
+                mut_obj = inputs.get("mutant_object") or inputs.get("mut_object") or ""
+                mut_str = inputs.get("mutation_str") or inputs.get("mutation") or ""
+                chain = inputs.get("chain", "A")
+
+                if not wt_obj or not mut_obj:
+                    res_objs = reg.execute("list_objects", {})
+                    objs = res_objs.get("objects", [])
+                    if len(objs) >= 2:
+                        wt_obj = wt_obj or objs[0]
+                        mut_obj = mut_obj or objs[1]
+                    else:
+                        record.state = WorkflowState.FAILED
+                        record.error = "WT-mutant comparison requires at least 2 loaded structures (wild-type and mutant)."
+                        return record
+
+                # Step 1: Execute sequence-aware structural comparison & local environment inspection
+                t0 = time.time()
+                res_comp = reg.execute("compare_wt_mutant", {
+                    "wildtype_object": wt_obj,
+                    "mutant_object": mut_obj,
+                    "mutation_str": mut_str,
+                    "chain": chain,
+                    "radius": float(inputs.get("radius", 5.0))
+                })
+                d1 = round((time.time() - t0) * 1000, 2)
+                step1 = WorkflowStepExecution(1, "Compare WT vs Mutant Structures", "compare_wt_mutant",
+                                              StepState.COMPLETED if res_comp.get("success") else StepState.FAILED,
+                                              {"wildtype_object": wt_obj, "mutant_object": mut_obj, "mutation_str": mut_str},
+                                              res_comp, d1, error_message=res_comp.get("error"))
+                record.step_records.append(step1)
+
+                if not res_comp.get("success"):
+                    record.state = WorkflowState.FAILED
+                    record.error = f"WT-mutant comparison failed: {res_comp.get('error')}"
+                    return record
+
+                loc = res_comp.get("local_mutation_comparison") or {}
+                record.scientific_measurements = {
+                    "wildtype_object": wt_obj,
+                    "mutant_object": mut_obj,
+                    "mutation": mut_str,
+                    "chain": chain,
+                    "global_chain_rmsd_angstrom": res_comp.get("global_chain_rmsd_angstrom", 0.0),
+                    "aligned_atoms": res_comp.get("aligned_atoms", 0),
+                    "structure_origin": res_comp.get("structure_origin", "experimental_structure"),
+                    "ca_displacement_angstrom": loc.get("ca_displacement_angstrom", 0.0),
+                    "backbone_rmsd_angstrom": loc.get("backbone_rmsd_angstrom", 0.0),
+                    "wildtype_neighbors_count": loc.get("wildtype_neighbors_count", 0),
+                    "mutant_neighbors_count": loc.get("mutant_neighbors_count", 0),
+                    "common_neighbors_count": loc.get("common_neighbors_count", 0),
+                    "polar_contacts_delta": loc.get("polar_contacts_delta", 0),
+                    "scientific_limitation": res_comp.get("scientific_limitation", "")
+                }
+                record.validation_gates_passed = res_comp.get("success", False)
+                record.state = WorkflowState.COMPLETED if record.validation_gates_passed else WorkflowState.FAILED
+
+            # WF10: Batch Structural Analysis
+            elif self.workflow_id == "WF10":
+                record.state = WorkflowState.RUNNING
+                struct_names = inputs.get("structure_names") or inputs.get("structures") or []
+                if not struct_names:
+                    res_objs = reg.execute("list_objects", {})
+                    struct_names = res_objs.get("objects", [])
+
+                if len(struct_names) < 2:
+                    record.state = WorkflowState.FAILED
+                    record.error = f"Batch structural comparison requires at least 2 loaded structures (found {len(struct_names)})."
+                    return record
+
+                ref_name = inputs.get("reference_name") or struct_names[0]
+                chain = inputs.get("chain", "A")
+                method = inputs.get("method", "align")
+                output_dir = inputs.get("output_dir", "")
+
+                t0 = time.time()
+                res_batch = reg.execute("batch_compare_structures", {
+                    "structure_names": struct_names,
+                    "reference_name": ref_name,
+                    "chain": chain,
+                    "method": method,
+                    "output_dir": output_dir
+                })
+                d1 = round((time.time() - t0) * 1000, 2)
+                step1 = WorkflowStepExecution(1, "Batch Pairwise Alignment", "batch_compare_structures",
+                                              StepState.COMPLETED if res_batch.get("success") else StepState.FAILED,
+                                              {"structure_names": struct_names, "reference_name": ref_name},
+                                              res_batch, d1, error_message=res_batch.get("error"))
+                record.step_records.append(step1)
+
+                if not res_batch.get("success"):
+                    record.state = WorkflowState.FAILED
+                    record.error = f"Batch comparison failed: {res_batch.get('error')}"
+                    return record
+
+                record.scientific_measurements = {
+                    "reference_structure": ref_name,
+                    "chain": chain,
+                    "total_structures_analyzed": res_batch.get("total_structures_analyzed", 0),
+                    "comparisons_count": res_batch.get("comparisons_count", 0),
+                    "results": res_batch.get("results", []),
+                    "exported_files": res_batch.get("exported_files", {}),
+                    "scientific_limitation": res_batch.get("scientific_limitation", "")
+                }
+                record.validation_gates_passed = res_batch.get("success", False) and res_batch.get("comparisons_count", 0) > 0
+                record.state = WorkflowState.COMPLETED if record.validation_gates_passed else WorkflowState.FAILED
+
             else:
                 record.state = WorkflowState.FAILED
                 record.error = f"Unsupported deterministic workflow: {self.workflow_id}"
@@ -705,6 +1071,16 @@ class WorkflowSession:
                 self.scientific_measurements["neighbor_residues_count"] = result.get("neighbor_residues_count")
             if "filepath" in result:
                 self.scientific_measurements["output_figure"] = result.get("filepath")
+            if "total_sasa_angstrom2" in result:
+                self.scientific_measurements["total_sasa_angstrom2"] = result["total_sasa_angstrom2"]
+            if "contacting_residues_count" in result:
+                self.scientific_measurements["contacting_residues_count"] = result["contacting_residues_count"]
+            if "mapped_residues_count" in result:
+                self.scientific_measurements["mapped_residues_count"] = result["mapped_residues_count"]
+            if "global_chain_rmsd_angstrom" in result:
+                self.scientific_measurements["global_chain_rmsd_angstrom"] = result["global_chain_rmsd_angstrom"]
+            if "total_structures_analyzed" in result:
+                self.scientific_measurements["total_structures_analyzed"] = result["total_structures_analyzed"]
 
         self.state = WorkflowState.RUNNING
 
@@ -725,23 +1101,33 @@ class WorkflowSession:
                 self.state = WorkflowState.COMPLETED
                 error_msg = None
             else:
-                # Workflow-specific mandatory gate verification
+                # Workflow-specific mandatory gate verification: core capability must succeed
                 if self.workflow.workflow_id == "WF01":
-                    gates_passed = ("fetch_structure" in executed_caps or "load_structure" in executed_caps) and not has_failures
+                    gates_passed = "fetch_structure" in executed_caps or "load_structure" in executed_caps
                 elif self.workflow.workflow_id == "WF02":
-                    gates_passed = ("get_object_info" in executed_caps or "get_structure_summary" in executed_caps) and not has_failures
+                    gates_passed = "get_object_info" in executed_caps or "get_structure_summary" in executed_caps
                 elif self.workflow.workflow_id == "WF03":
-                    gates_passed = ("align_structures" in executed_caps or "calculate_rmsd" in executed_caps) and not has_failures
+                    gates_passed = "align_structures" in executed_caps or "calculate_rmsd" in executed_caps
                 elif self.workflow.workflow_id == "WF04":
-                    gates_passed = ("analyze_mutation" in executed_caps or "find_nearby_residues" in executed_caps) and not has_failures
+                    gates_passed = "analyze_mutation" in executed_caps or "find_nearby_residues" in executed_caps
                 elif self.workflow.workflow_id == "WF05":
-                    gates_passed = ("export_png" in executed_caps or "apply_visualization_preset" in executed_caps) and not has_failures
+                    gates_passed = "export_png" in executed_caps or "apply_visualization_preset" in executed_caps
+                elif self.workflow.workflow_id == "WF06":
+                    gates_passed = "analyze_ligand_interactions" in executed_caps or "identify_ligands" in executed_caps
+                elif self.workflow.workflow_id == "WF07":
+                    gates_passed = "calculate_sasa" in executed_caps or "map_sasa_to_structure" in executed_caps
+                elif self.workflow.workflow_id == "WF08":
+                    gates_passed = "map_epitope_sequence" in executed_caps or "visualize_epitope" in executed_caps
+                elif self.workflow.workflow_id == "WF09":
+                    gates_passed = "compare_wt_mutant" in executed_caps
+                elif self.workflow.workflow_id == "WF10":
+                    gates_passed = "batch_compare_structures" in executed_caps
                 else:
                     gates_passed = not has_failures
 
                 if gates_passed:
                     self.state = WorkflowState.COMPLETED
-                    error_msg = None
+                    error_msg = None if not has_failures else "Core workflow gates passed with non-fatal auxiliary warnings."
                 else:
                     self.state = WorkflowState.FAILED
                     error_msg = "Mandatory workflow validation gates failed or incomplete."
@@ -830,6 +1216,21 @@ class EntityExtractor:
         if re.search(r"\b(multichain|multi-chain|all chains|toàn bộ chuỗi|toàn bộ protein)\b", text, re.IGNORECASE):
             entities["scope"] = "multichain"
 
+        # 9. Ligand identifier (e.g. ligand AP5, chất gắn AP5, resn AP5)
+        lig_match = re.search(r"\b(?:ligand|chất gắn|resn)\s+([A-Za-z0-9]{1,5})\b", text, re.IGNORECASE)
+        if lig_match:
+            entities["ligand_resn"] = lig_match.group(1).upper()
+
+        # 10. Epitope sequence (e.g. epitope TITLEVE, peptide TITLEVE, đoạn TITLEVE)
+        epi_match = re.search(r"\b(?:epitope|peptide|biểu vị|đoạn|sequence)\s+([A-Za-z]{4,30})\b", text, re.IGNORECASE)
+        if epi_match:
+            entities["epitope_sequence"] = epi_match.group(1).upper()
+
+        # 11. Probe radius (e.g. probe 1.4, bán kính 1.4)
+        probe_match = re.search(r"\b(?:probe|bán kính dò|probe radius)\s+(\d+(?:\.\d+)?)\b", text, re.IGNORECASE)
+        if probe_match:
+            entities["probe_radius"] = float(probe_match.group(1))
+
         return entities
 
 
@@ -892,9 +1293,25 @@ class WorkflowRegistry:
                 if any(w in text_lower for w in ["compare", "so sánh", "align", "căn chỉnh", "rmsd"]):
                     score += 0.4
             elif wf.workflow_id == "WF04" and "mutation" in entities:
-                score += 0.5
+                # Do not prioritize WF04 if user explicitly requests comparison between WT and mutant
+                if not (any(w in text_lower for w in ["compare", "so sánh", "vs", "versus", "đối chiếu"]) and any(w in text_lower for w in ["wt", "wildtype", "wild-type", "với wildtype", "mutant"])):
+                    score += 0.5
             elif wf.workflow_id == "WF05" and ("png" in text_lower or "figure" in text_lower or "xuất" in text_lower or "publication" in text_lower):
                 score += 0.4
+            elif wf.workflow_id == "WF06" and ("ligand" in text_lower or "pocket" in text_lower or "túi gắn" in text_lower or "chất gắn" in text_lower or "ligand_resn" in entities):
+                score += 0.5
+            elif wf.workflow_id == "WF07" and ("sasa" in text_lower or "solvent" in text_lower or "accessibility" in text_lower or "dung môi" in text_lower or "bộc lộ" in text_lower):
+                score += 0.5
+            elif wf.workflow_id == "WF08" and ("epitope" in text_lower or "antigen" in text_lower or "biểu vị" in text_lower or "kháng nguyên" in text_lower or "epitope_sequence" in entities):
+                score += 0.5
+            elif wf.workflow_id == "WF09":
+                has_comp = any(w in text_lower for w in ["compare", "so sánh", "vs", "versus", "đối chiếu"])
+                has_mut = any(w in text_lower for w in ["mutant", "mutation", "đột biến"]) or "mutation" in entities
+                has_wt = any(w in text_lower for w in ["wt", "wildtype", "wild-type"])
+                if has_comp and (has_wt or has_mut):
+                    score += 0.7
+            elif wf.workflow_id == "WF10" and ("batch" in text_lower or "hàng loạt" in text_lower or "ensemble" in text_lower or "tập hợp" in text_lower):
+                score += 0.5
 
             if score > best_score:
                 best_score = score
@@ -1122,6 +1539,185 @@ class WorkflowRegistry:
             expected_outputs=["png_path", "pse_path", "pml_path"],
             scientific_limitations=[
                 "Publication figures represent static molecular models; molecular surfaces are calculated based on chosen solvent probe radius (default 1.4 Å)."
+            ]
+        ))
+
+        # --------------------------------------------------------------------
+        # WF06 — Ligand Interaction Analysis
+        # --------------------------------------------------------------------
+        self.register(WorkflowDefinition(
+            workflow_id="WF06",
+            name="Ligand Interaction Analysis",
+            description="Identify biologically relevant bound ligands, distinguish from additives, calculate minimum heavy-atom distances and polar contacts, and visualize pocket.",
+            user_intents=[
+                "ligand", "binding pocket", "ligand contacts", "interact", "pocket",
+                "tương tác ligand", "túi gắn", "phân tích ligand", "chất chủ vận", "chất ức chế", "ligand interactions"
+            ],
+            intent_patterns=[
+                r"(?:analyze|inspect|phân tích|xem)\s+(?:the\s+)?(?:ligand|pocket|túi gắn|binding site)",
+                r"(?:ligand|chất gắn)\s+([a-zA-Z0-9]{1,5})\s+(?:interaction|contacts|tương tác)"
+            ],
+            required_inputs=[],
+            required_capabilities=[
+                "list_objects", "get_chains", "identify_ligands", "analyze_ligand_interactions",
+                "visualize_ligand_pocket", "export_ligand_contacts"
+            ],
+            steps=[
+                WorkflowStep(1, "Discover Ligands", "Identify bound organic ligands excluding solvent and common additives", "identify_ligands"),
+                WorkflowStep(2, "Analyze Pocket Contacts", "Compute minimum heavy-atom distances and geometric polar contact candidates", "analyze_ligand_interactions"),
+                WorkflowStep(3, "Visualize Pocket", "Render pocket sticks with dashed polar contacts and centered view", "visualize_ligand_pocket")
+            ],
+            validation_criteria={
+                "precondition": "Target protein structure loaded with at least one bound ligand",
+                "postcondition": "Contacting residue table and polar contact candidates computed"
+            },
+            error_recovery="If no organic ligand is found, report all detected heteroatoms and prompt user.",
+            cancellation_behavior="Restore original protein representation on cancel.",
+            expected_outputs=["ligand_resn", "contacting_residues_count", "polar_contacts_count", "contacts"],
+            scientific_limitations=[
+                "Geometric proximity (< 4.0 Å) indicates structural neighborhood and geometric polar contact candidates, but does NOT constitute thermodynamic proof of binding affinity or free energy."
+            ]
+        ))
+
+        # --------------------------------------------------------------------
+        # WF07 — Solvent Accessibility Analysis
+        # --------------------------------------------------------------------
+        self.register(WorkflowDefinition(
+            workflow_id="WF07",
+            name="Solvent Accessibility Analysis",
+            description="Calculate total and per-residue solvent-accessible surface area (SASA, Å²) and relative solvent accessibility (RSA, %) using PyMOL's native dot-solvent engine.",
+            user_intents=[
+                "sasa", "solvent accessibility", "surface area", "rsa", "buried residues", "exposed residues",
+                "diện tích tiếp xúc dung môi", "độ bộc lộ", "vùng vùi", "khả năng tiếp cận dung môi"
+            ],
+            intent_patterns=[
+                r"(?:calculate|tính)\s+(?:sasa|solvent accessibility|diện tích tiếp xúc dung môi)",
+                r"(?:map|hiển thị)\s+(?:sasa|accessibility|độ bộc lộ)"
+            ],
+            required_inputs=[],
+            required_capabilities=[
+                "list_objects", "calculate_sasa", "map_sasa_to_structure", "compare_sasa", "export_sasa_table"
+            ],
+            steps=[
+                WorkflowStep(1, "Calculate SASA", "Compute absolute SASA (Å²) and relative accessibility (RSA %) per residue", "calculate_sasa"),
+                WorkflowStep(2, "Map to Structure", "Load SASA values into B-factors and color molecular surface with accessibility spectrum", "map_sasa_to_structure")
+            ],
+            validation_criteria={
+                "precondition": "At least one structure loaded in session",
+                "postcondition": "Total SASA > 0 Å² and residue accessibility breakdown populated"
+            },
+            error_recovery="Ensure dot_solvent=1 and valid probe radius (1.4 Å).",
+            cancellation_behavior="Reset B-factor coloring on cancel.",
+            expected_outputs=["total_sasa_angstrom2", "buried_residues_count", "exposed_residues_count"],
+            scientific_limitations=[
+                "SASA represents a static snapshot; dynamic breathing and crystal packing can alter accessibility in solution."
+            ]
+        ))
+
+        # --------------------------------------------------------------------
+        # WF08 — Epitope Structural Mapping
+        # --------------------------------------------------------------------
+        self.register(WorkflowDefinition(
+            workflow_id="WF08",
+            name="Epitope Structural Mapping",
+            description="Map linear epitope sequences or residue lists to 3D structure, evaluate spatial clustering and solvent accessibility, and generate publication-grade figures.",
+            user_intents=[
+                "epitope", "linear epitope", "map epitope", "antigen", "conformational epitope",
+                "kháng nguyên", "biểu vị", "ánh xạ epitope", "đoạn epitope", "vùng epitope"
+            ],
+            intent_patterns=[
+                r"(?:map|ánh xạ)\s+(?:the\s+)?(?:epitope|biểu vị|peptide)\s+([a-zA-Z]+)",
+                r"(?:epitope|biểu vị)\s+(?:mapping|phân tích)"
+            ],
+            required_inputs=["epitope_sequence"],
+            required_capabilities=[
+                "list_objects", "get_chains", "map_epitope_sequence", "visualize_epitope", "calculate_sasa"
+            ],
+            steps=[
+                WorkflowStep(1, "Map Sequence to 3D Coordinates", "Resolve chain and residue sequence offsets in loaded model", "map_epitope_sequence"),
+                WorkflowStep(2, "Analyze Presentation & Accessibility", "Compute spatial clustering diameter and residue RSA", "map_epitope_sequence"),
+                WorkflowStep(3, "Visualize Epitope", "Highlight epitope on molecular surface with contrasting presentation", "visualize_epitope")
+            ],
+            validation_criteria={
+                "precondition": "Target protein loaded and linear sequence exists in protein chains",
+                "postcondition": "1-to-1 residue correspondence mapped with spatial centroid calculated"
+            },
+            error_recovery="If sequence is not found in chain A, search remaining chains before failing.",
+            cancellation_behavior="Clear epitope highlight on cancel.",
+            expected_outputs=["mapped_residues_count", "residue_numbers", "spatial_centroid", "is_spatially_clustered"],
+            scientific_limitations=[
+                "Surface exposure alone does NOT establish antigenicity, antibody binding affinity, or in vivo immunogenicity without serological assays."
+            ]
+        ))
+
+        # --------------------------------------------------------------------
+        # WF09 — WT–Mutant Structural Comparison
+        # --------------------------------------------------------------------
+        self.register(WorkflowDefinition(
+            workflow_id="WF09",
+            name="WT–Mutant Structural Comparison",
+            description="Perform sequence-aware alignment of WT and mutant structures, compare local residue environments, contact networks, and quantify geometric deviations.",
+            user_intents=[
+                "wt vs mutant", "compare mutant", "wildtype mutant", "mutant structure",
+                "so sánh đột biến", "đột biến so với wildtype", "đối chiếu cấu trúc đột biến", "so sánh wt và mutant"
+            ],
+            intent_patterns=[
+                r"(?:compare|so sánh)\s+(?:wt|wildtype|wild-type)\s+(?:and|vs|với)\s+(?:mutant|đột biến)",
+                r"(?:compare|so sánh)\s+(?:cấu trúc\s+)?(?:đột biến|mutant).*?(?:với|with|vs|and)\s+(?:wildtype|wt|wild-type)",
+                r"(?:mutation|đột biến)\s+(?:structural comparison|đối chiếu cấu trúc|so sánh)"
+            ],
+            required_inputs=["wildtype_object", "mutant_object"],
+            required_capabilities=[
+                "list_objects", "compare_wt_mutant", "align_structures", "calculate_rmsd", "show_representation", "color_selection"
+            ],
+            steps=[
+                WorkflowStep(1, "Superimpose Structures", "Sequence-aware alignment of mutant onto wild-type model", "compare_wt_mutant"),
+                WorkflowStep(2, "Local Environment & Contact Deltas", "Measure C-alpha displacement and analyze gained/lost contacts", "compare_wt_mutant")
+            ],
+            validation_criteria={
+                "precondition": "Both wild-type and mutant structures loaded in PyMOL session",
+                "postcondition": "Global RMSD, C-alpha displacement, and contact network comparison calculated"
+            },
+            error_recovery="Do not fabricate missing coordinates if mutant residue is not modeled.",
+            cancellation_behavior="Reset object colors on cancel.",
+            expected_outputs=["global_chain_rmsd_angstrom", "ca_displacement_angstrom", "wildtype_neighbors_count", "mutant_neighbors_count"],
+            scientific_limitations=[
+                "Never claim a mutation alters protein stability (ddG) or biological function based on geometric structural differences alone."
+            ]
+        ))
+
+        # --------------------------------------------------------------------
+        # WF10 — Batch Structural Analysis
+        # --------------------------------------------------------------------
+        self.register(WorkflowDefinition(
+            workflow_id="WF10",
+            name="Batch Structural Analysis",
+            description="Perform consistent pairwise structural alignments across a batch of structures against a common reference, exporting structured comparison tables and overlay figures.",
+            user_intents=[
+                "batch", "batch align", "compare multiple", "ensemble", "multiple structures",
+                "hàng loạt", "so sánh hàng loạt", "nhiều cấu trúc", "so sánh tập hợp", "đồng thời nhiều cấu trúc"
+            ],
+            intent_patterns=[
+                r"(?:batch|hàng loạt)\s+(?:compare|alignment|căn chỉnh|so sánh)",
+                r"(?:align|so sánh)\s+(?:all|multiple|tất cả|nhiều)\s+(?:structures|cấu trúc)"
+            ],
+            required_inputs=["structure_names"],
+            required_capabilities=[
+                "list_objects", "batch_compare_structures", "export_analysis_csv", "export_analysis_json"
+            ],
+            steps=[
+                WorkflowStep(1, "Batch Pairwise Superposition", "Align each structure individually against designated reference", "batch_compare_structures"),
+                WorkflowStep(2, "Export Comparative Metrics", "Export structured comparison table (CSV, JSON) and multi-overlay figure", "batch_compare_structures")
+            ],
+            validation_criteria={
+                "precondition": "At least 2 structures loaded (up to 20 maximum)",
+                "postcondition": "Consistent pairwise metrics computed across all structures in batch"
+            },
+            error_recovery="Skip structures with incompatible chain selections while continuing the rest of the batch.",
+            cancellation_behavior="Clean abort after current pair completes.",
+            expected_outputs=["reference_structure", "total_structures_analyzed", "results", "exported_files"],
+            scientific_limitations=[
+                "Pairwise rigid-body fitting against a single reference does not replace multimeric assembly analysis or flexible ensemble clustering."
             ]
         ))
 

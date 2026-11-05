@@ -279,15 +279,15 @@ class ToolRegistry:
 
         self.register(ToolDefinition(
             name="highlight_residues",
-            description="Highlight specific residues with a chosen representation (e.g. 'sticks') and distinct color (e.g. 'yellow').",
+            description="Highlight specific residues with a chosen representation (e.g. 'sticks') and distinct color (e.g. 'yellow'). Accepts selection string or residues list.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "selection": {"type": "string", "description": "Residues to highlight."},
+                    "selection": {"type": "string", "description": "Residues to highlight (e.g. 'chain A and resi 8-15')."},
+                    "residues": {"description": "List of residue dicts (e.g. from find_nearby_residues)."},
                     "representation": {"type": "string", "description": "Representation (default 'sticks')."},
                     "color": {"type": "string", "description": "Color name (default 'yellow')."}
-                },
-                "required": ["selection"]
+                }
             },
             func=tools.tool_highlight_residues
         ))
@@ -613,6 +613,208 @@ class ToolRegistry:
                 "required": ["filename", "rows"]
             },
             func=tools.tool_export_analysis_csv
+        ))
+
+        # --- Phase 4 Advanced Tools ---
+
+        self.register(ToolDefinition(
+            name="identify_ligands",
+            description="Identify biologically relevant bound ligands in a loaded structure, distinguishing them from solvent, additives, and salts.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object to inspect."}
+                },
+                "required": ["object_name"]
+            },
+            func=tools.tool_identify_ligands
+        ))
+
+        self.register(ToolDefinition(
+            name="analyze_ligand_interactions",
+            description="Analyze protein contacting residues within a cutoff distance of a ligand, computing minimum heavy-atom distances and geometric polar contacts.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "ligand_resn": {"type": "string", "description": "3-letter residue name of the ligand (e.g. 'AP5')."},
+                    "ligand_resi": {"type": "string", "description": "Residue sequence number of the ligand (e.g. '215')."},
+                    "ligand_chain": {"type": "string", "description": "Chain identifier of the ligand (e.g. 'A')."},
+                    "cutoff": {"type": "number", "description": "Distance cutoff in angstroms (default 4.0).", "default": 4.0},
+                    "altloc": {"type": "string", "description": "Alternate conformation identifier to prioritize (default 'A').", "default": "A"}
+                },
+                "required": ["object_name"]
+            },
+            func=tools.tool_analyze_ligand_interactions
+        ))
+
+        self.register(ToolDefinition(
+            name="visualize_ligand_pocket",
+            description="Render publication-grade visualization of the ligand binding pocket with dashes for polar contacts and zoomed framing.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "ligand_resn": {"type": "string", "description": "3-letter residue name of the ligand."},
+                    "ligand_resi": {"type": "string", "description": "Residue sequence number of the ligand."},
+                    "ligand_chain": {"type": "string", "description": "Chain of the ligand."},
+                    "cutoff": {"type": "number", "description": "Pocket radius in angstroms.", "default": 4.0},
+                    "show_contacts": {"type": "boolean", "description": "Whether to draw dashed lines for polar contacts.", "default": True}
+                },
+                "required": ["object_name", "ligand_resn"]
+            },
+            func=tools.tool_visualize_ligand_pocket
+        ))
+
+        self.register(ToolDefinition(
+            name="export_ligand_contacts",
+            description="Export ligand contacting residues and minimum distances to a JSON or CSV file.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "output_path": {"type": "string", "description": "Output file path (JSON or CSV)."},
+                    "ligand_resn": {"type": "string", "description": "Ligand residue name."},
+                    "ligand_resi": {"type": "string", "description": "Ligand residue number."},
+                    "cutoff": {"type": "number", "description": "Distance cutoff.", "default": 4.0},
+                    "format": {"type": "string", "enum": ["json", "csv"], "default": "json"}
+                },
+                "required": ["object_name", "output_path"]
+            },
+            func=tools.tool_export_ligand_contacts
+        ))
+
+        self.register(ToolDefinition(
+            name="calculate_sasa",
+            description="Calculate total and per-residue solvent-accessible surface area (SASA, Å²) and relative solvent accessibility (RSA, %).",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "selection": {"type": "string", "description": "Optional sub-selection (default all).", "default": ""},
+                    "probe_radius": {"type": "number", "description": "Solvent probe sphere radius in angstroms.", "default": 1.4},
+                    "dot_density": {"type": "integer", "description": "Dot surface density (1-4).", "default": 2}
+                },
+                "required": ["object_name"]
+            },
+            func=tools.tool_calculate_sasa
+        ))
+
+        self.register(ToolDefinition(
+            name="map_sasa_to_structure",
+            description="Map per-atom or per-residue SASA values into B-factors and color the molecular surface or cartoon by accessibility.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "selection": {"type": "string", "description": "Optional sub-selection.", "default": ""},
+                    "probe_radius": {"type": "number", "description": "Solvent probe radius.", "default": 1.4},
+                    "palette": {"type": "string", "description": "Color spectrum palette (e.g. 'blue_white_red').", "default": "blue_white_red"},
+                    "representation": {"type": "string", "enum": ["surface", "cartoon"], "default": "surface"}
+                },
+                "required": ["object_name"]
+            },
+            func=tools.tool_map_sasa_to_structure
+        ))
+
+        self.register(ToolDefinition(
+            name="compare_sasa",
+            description="Compare residue SASA between two structures (e.g., apo vs holo, or wild-type vs mutant) to detect burying or exposure.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object1": {"type": "string", "description": "First PyMOL object."},
+                    "object2": {"type": "string", "description": "Second PyMOL object."},
+                    "chain1": {"type": "string", "description": "Chain for first object.", "default": "A"},
+                    "chain2": {"type": "string", "description": "Chain for second object.", "default": "A"},
+                    "probe_radius": {"type": "number", "description": "Solvent probe radius in angstroms.", "default": 1.4}
+                },
+                "required": ["object1", "object2"]
+            },
+            func=tools.tool_compare_sasa
+        ))
+
+        self.register(ToolDefinition(
+            name="export_sasa_table",
+            description="Calculate and export residue SASA and relative accessibility (RSA) table to a JSON or CSV file.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "output_path": {"type": "string", "description": "Output file path (JSON or CSV)."},
+                    "selection": {"type": "string", "description": "Optional sub-selection.", "default": ""},
+                    "probe_radius": {"type": "number", "description": "Probe radius in angstroms.", "default": 1.4},
+                    "format": {"type": "string", "enum": ["json", "csv"], "default": "json"}
+                },
+                "required": ["object_name", "output_path"]
+            },
+            func=tools.tool_export_sasa_table
+        ))
+
+        self.register(ToolDefinition(
+            name="map_epitope_sequence",
+            description="Map a linear epitope sequence or residue range to 3D structure, evaluating solvent accessibility and spatial clustering.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "epitope_sequence": {"type": "string", "description": "Linear peptide sequence (e.g. 'TITLEVE')."},
+                    "residue_list": {"type": "string", "description": "Comma-separated residue numbers or range (e.g. '12-18' or '40,41,42')."},
+                    "chain": {"type": "string", "description": "Optional chain identifier.", "default": ""}
+                },
+                "required": ["object_name"]
+            },
+            func=tools.tool_map_epitope_sequence
+        ))
+
+        self.register(ToolDefinition(
+            name="visualize_epitope",
+            description="Highlight mapped epitope residues on the protein structure using contrasting colors and surface or sphere representations.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string", "description": "Name of the PyMOL object."},
+                    "chain": {"type": "string", "description": "Chain identifier containing the epitope."},
+                    "residue_numbers": {"type": "array", "description": "List of residue numbers belonging to the epitope.", "items": {"type": "string"}},
+                    "representation": {"type": "string", "enum": ["surface_highlight", "spheres"], "default": "surface_highlight"}
+                },
+                "required": ["object_name", "chain", "residue_numbers"]
+            },
+            func=tools.tool_visualize_epitope
+        ))
+
+        self.register(ToolDefinition(
+            name="compare_wt_mutant",
+            description="Perform sequence-aware alignment of WT and mutant structures, analyzing local C-alpha displacement and contact network changes.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "wildtype_object": {"type": "string", "description": "Name of wild-type PyMOL object."},
+                    "mutant_object": {"type": "string", "description": "Name of mutant PyMOL object."},
+                    "mutation_str": {"type": "string", "description": "Mutation notation (e.g. 'R42A' or 'Arg42Ala')."},
+                    "chain": {"type": "string", "description": "Chain identifier (default 'A').", "default": "A"},
+                    "radius": {"type": "number", "description": "Local neighborhood radius in angstroms.", "default": 5.0}
+                },
+                "required": ["wildtype_object", "mutant_object"]
+            },
+            func=tools.tool_compare_wt_mutant
+        ))
+
+        self.register(ToolDefinition(
+            name="batch_compare_structures",
+            description="Perform consistent pairwise structural alignment across a batch of structures against a common reference, exporting summary tables and overlay figures.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "structure_names": {"type": "array", "description": "List of loaded PyMOL object names.", "items": {"type": "string"}},
+                    "reference_name": {"type": "string", "description": "Optional reference structure (default first structure in list)."},
+                    "chain": {"type": "string", "description": "Chain to align (default 'A').", "default": "A"},
+                    "method": {"type": "string", "enum": ["align", "super", "cealign"], "default": "align"},
+                    "output_dir": {"type": "string", "description": "Optional directory to save comparison tables (CSV, JSON), overlay image, and session."}
+                },
+                "required": ["structure_names"]
+            },
+            func=tools.tool_batch_compare_structures
         ))
 
 
