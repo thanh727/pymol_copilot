@@ -23,3 +23,4 @@ pymol_ai_copilot = "pymol_ai_copilot:__init_plugin__"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["pymol_ai_copilot*"]
+

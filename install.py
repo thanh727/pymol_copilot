@@ -94,3 +94,4 @@ if __name__ == "__main__":
         uninstall_plugin()
     else:
         install_plugin()
+

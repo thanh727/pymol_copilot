@@ -4,7 +4,9 @@ Mutation parsing, sequence position verification, neighborhood contact analysis,
 
 import re
 from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
 from ..pymol_bridge.executor import PyMOLExecutor
+from .contacts import resi_sort_key
 
 
 class MutationAnalyzer:
@@ -142,20 +144,26 @@ class MutationAnalyzer:
             self.cmd.iterate(neighbor_sel, "stored_neighbors.add((chain, resi, resn))", space={"stored_neighbors": stored_neighbors})
 
             neighbor_list = sorted(
-                [{"chain": r[0], "resi": r[1], "resn": r[2]} for r in stored_neighbors],
-                key=lambda x: (x["chain"], int(x["resi"]) if x["resi"].isdigit() else x["resi"])
+                [{"chain": r[0], "resi": str(r[1]), "resn": r[2]} for r in stored_neighbors],
+                key=lambda x: (x["chain"], resi_sort_key(x["resi"]))
             )
 
             # Find polar contact candidates
             dist_name = "ai_mut_contacts"
             self.cmd.delete(dist_name)
-            self.cmd.distance(dist_name, mut_sel, neighbor_sel, cutoff=3.5, mode=2)
+            dist_val = self.cmd.distance(dist_name, mut_sel, neighbor_sel, cutoff=3.5, mode=2)
             polar_dists = []
-            try:
-                for item in self.cmd.get_raw_distances(dist_name):
-                    polar_dists.append(round(float(item[2]), 2))
-            except Exception:
-                pass
+
+            coords_mut = self.cmd.get_coords(f"({mut_sel}) and (elem N,O)", 1)
+            coords_nb = self.cmd.get_coords(f"({neighbor_sel}) and (elem N,O)", 1)
+            if coords_mut is not None and coords_nb is not None and len(coords_mut) > 0 and len(coords_nb) > 0:
+                diff = coords_mut[:, np.newaxis, :] - coords_nb[np.newaxis, :, :]
+                mat = np.sqrt(np.sum(diff**2, axis=-1))
+                within = mat[mat <= 3.5]
+                polar_dists = [round(float(d), 2) for d in np.sort(within)]
+
+            if len(polar_dists) == 0 and dist_val > 0 and dist_val <= 3.5:
+                polar_dists = [round(float(dist_val), 2)]
 
             return {
                 "object": obj,

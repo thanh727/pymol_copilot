@@ -164,7 +164,7 @@ class CopilotDialog(QtWidgets.QDialog):
 
         self.context_label = QtWidgets.QLabel("No objects detected.")
         self.context_label.setWordWrap(True)
-        self.context_label.setStyleSheet("color: #2c3e50; font-family: monospace; font-size: 11px;")
+        self.context_label.setStyleSheet("color: #2c3e50; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 11px;")
         context_layout.addWidget(self.context_label, 1)
 
         self.btn_refresh_context = QtWidgets.QPushButton("Refresh State")
@@ -465,7 +465,7 @@ class CopilotDialog(QtWidgets.QDialog):
             summary = summary[:250] + "... }"
 
         html_block = f"""
-        <div style="margin: 2px 0 8px 24px; font-size: 11px; font-family: monospace; color: {color};">
+        <div style="margin: 2px 0 8px 24px; font-size: 11px; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; color: {color};">
             {icon} <b>{html.escape(tool_name)} result:</b> {html.escape(summary)}
         </div>
         """

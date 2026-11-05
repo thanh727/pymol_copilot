@@ -4,6 +4,7 @@ Structure alignment, superposition, and RMSD computation.
 
 from typing import Any, Dict, List, Optional, Tuple
 from ..pymol_bridge.executor import PyMOLExecutor
+from .contacts import resi_sort_key
 
 
 class StructureAligner:
@@ -174,25 +175,43 @@ class StructureAligner:
     ) -> Dict[str, Any]:
         """
         Compare corresponding residues in two structures, identifying high-deviation regions (> threshold).
+        Handles missing or unassigned chains and insertion codes gracefully.
         """
         def _exec():
+            # Resolve actual chains in structures
+            chains_s1 = self.cmd.get_chains(structure1)
+            chains_s2 = self.cmd.get_chains(structure2)
+
+            eff_ch1 = chain1
+            if eff_ch1 not in chains_s1 and chains_s1:
+                eff_ch1 = chains_s1[0]
+
+            eff_ch2 = chain2
+            if eff_ch2 not in chains_s2 and chains_s2:
+                eff_ch2 = chains_s2[0]
+
             # Get CA coordinates and residues for both
             def get_ca_map(obj, ch):
-                sel = f"model {obj} and chain {ch} and name CA"
+                sel_parts = [f"model {obj}", "name CA"]
+                if ch:
+                    sel_parts.append(f"chain '{ch}'")
+                sel = " and ".join(sel_parts)
+
                 data = {}
                 def store(resi, resn, x, y, z):
                     data[str(resi)] = {"resn": resn, "coord": (x, y, z)}
                 self.cmd.iterate_state(1, sel, "store(resi, resn, x, y, z)", space={"store": store})
                 return data
 
-            map1 = get_ca_map(structure1, chain1)
-            map2 = get_ca_map(structure2, chain2)
+            map1 = get_ca_map(structure1, eff_ch1)
+            map2 = get_ca_map(structure2, eff_ch2)
 
-            common_resi = sorted(set(map1.keys()) & set(map2.keys()), key=lambda x: int(x) if x.isdigit() else x)
+            common_resi = sorted(set(map1.keys()) & set(map2.keys()), key=resi_sort_key)
             if not common_resi:
                 return {
-                    "structure1": structure1,
-                    "structure2": structure2,
+                    "success": True,
+                    "structure1": f"{structure1}:{eff_ch1}",
+                    "structure2": f"{structure2}:{eff_ch2}",
                     "common_residues_count": 0,
                     "message": "No matching residue numbers found between the two structures."
                 }
@@ -215,8 +234,9 @@ class StructureAligner:
                     })
 
             return {
-                "structure1": f"{structure1}:{chain1}",
-                "structure2": f"{structure2}:{chain2}",
+                "success": True,
+                "structure1": f"{structure1}:{eff_ch1}",
+                "structure2": f"{structure2}:{eff_ch2}",
                 "compared_residues": len(common_resi),
                 "threshold_angstroms": deviation_threshold,
                 "deviating_residues_count": len(deviations),

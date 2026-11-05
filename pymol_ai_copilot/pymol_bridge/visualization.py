@@ -4,6 +4,7 @@ Publication-ready visualization presets, styling, and rendering management.
 
 from typing import Any, Dict, List, Optional
 from .executor import PyMOLExecutor
+from ..analysis.contacts import resi_sort_key
 
 
 class VisualizationPresetManager:
@@ -88,7 +89,16 @@ class VisualizationPresetManager:
                 raise ValueError(f"Ligand selection '{ligand_selection}' contains 0 atoms.")
 
             pocket_sel = "ai_pocket_residues"
-            protein_scope = f"model {protein_object} and polymer.protein" if protein_object else "polymer.protein"
+            # Auto-detect parent model if not specified to prevent multi-structure contamination
+            target_obj = protein_object
+            if not target_obj:
+                models = []
+                self.cmd.iterate(ligand_selection, "models.append(model)", space={"models": models})
+                unique_models = sorted(list(set(models)))
+                if len(unique_models) == 1:
+                    target_obj = unique_models[0]
+
+            protein_scope = f"model {target_obj} and polymer.protein" if target_obj else "polymer.protein"
 
             # Select nearby residues within cutoff
             self.cmd.select(pocket_sel, f"byres ({protein_scope} within {cutoff} of ({ligand_selection}))")
@@ -128,8 +138,12 @@ class VisualizationPresetManager:
                 "preset": "binding_pocket",
                 "ligand_selection": ligand_selection,
                 "cutoff_angstroms": cutoff,
+                "parent_protein_object": target_obj,
                 "pocket_atoms": pocket_count,
-                "interacting_residues": [{"chain": r[0], "resi": r[1], "resn": r[2]} for r in sorted(stored_pocket)],
+                "interacting_residues": sorted(
+                    [{"chain": r[0], "resi": str(r[1]), "resn": r[2]} for r in stored_pocket],
+                    key=lambda x: (x["chain"], resi_sort_key(x["resi"]))
+                ),
                 "polar_contacts_shown": show_polar
             }
 

@@ -188,7 +188,7 @@ class OllamaClient:
         if extracted:
             return extracted
 
-        # 2. Check content
+        # 2. Check content for JSON objects (code blocks, JSON lines, or embedded in conversational text)
         content = message.get("content", "").strip()
         if not content:
             return []
@@ -210,37 +210,37 @@ class OllamaClient:
         if extracted:
             return extracted
 
-        # 2b. Check for JSON lines (common when LLMs emit multiple tool calls)
-        for line in content.splitlines():
-            line = line.strip()
-            if line.startswith("{") and line.endswith("}"):
-                try:
-                    parsed = json.loads(line)
-                    if isinstance(parsed, dict) and "name" in parsed:
-                        extracted.append({
-                            "id": f"call_{parsed['name']}",
-                            "name": parsed["name"],
-                            "arguments": parsed.get("arguments", {})
-                        })
-                except Exception:
-                    pass
+        # 2b. Robust JSON stream decoder (parses one or more JSON objects anywhere in content)
+        decoder = json.JSONDecoder()
+        pos = 0
+        content_len = len(content)
+        while pos < content_len:
+            idx = content.find("{", pos)
+            if idx == -1:
+                break
+            try:
+                obj, end = decoder.raw_decode(content, idx)
+                if isinstance(obj, dict) and "name" in obj:
+                    args = obj.get("arguments", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except Exception:
+                            pass
+                    extracted.append({
+                        "id": f"call_{obj['name']}",
+                        "name": obj["name"],
+                        "arguments": args
+                    })
+                pos = max(end, idx + 1)
+            except json.JSONDecodeError:
+                pos = idx + 1
 
         if extracted:
             return extracted
 
-        # 2c. Check for whole JSON object or array
-        if content.startswith("{") and content.endswith("}"):
-            try:
-                parsed = json.loads(content)
-                if isinstance(parsed, dict) and "name" in parsed:
-                    extracted.append({
-                        "id": f"call_{parsed['name']}",
-                        "name": parsed["name"],
-                        "arguments": parsed.get("arguments", {})
-                    })
-            except Exception:
-                pass
-        elif content.startswith("[") and content.endswith("]"):
+        # 2c. Check for JSON array of tool calls: [{"name": ...}, ...]
+        if content.startswith("[") and content.endswith("]"):
             try:
                 parsed = json.loads(content)
                 if isinstance(parsed, list):

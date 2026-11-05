@@ -2,9 +2,25 @@
 Intermolecular and intramolecular contact analysis, distances, and binding pockets.
 """
 
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 from ..pymol_bridge.executor import PyMOLExecutor
+
+
+def resi_sort_key(resi_val: Any) -> Tuple[int, str]:
+    """
+    Safely sort residue numbers with optional insertion codes (e.g. '100', '100A', '-1').
+    Returns (integer_part, insertion_code) to prevent comparison crashes in Python 3.
+    """
+    s = str(resi_val).strip()
+    m = re.match(r"^([-+]?\d+)(.*)$", s)
+    if m:
+        try:
+            return (int(m.group(1)), m.group(2))
+        except ValueError:
+            pass
+    return (999999, s)
 
 
 class ContactAnalyzer:
@@ -25,6 +41,23 @@ class ContactAnalyzer:
     def cmd(self):
         return self.executor.cmd
 
+    def _get_atoms_with_coords(self, selection: str) -> Tuple[List[Tuple[str, int]], np.ndarray]:
+        """
+        Extract unique atom identifiers (model, index) and their 3D coordinates (N, 3).
+        """
+        atom_info = []
+        self.cmd.iterate_state(
+            1, selection,
+            "atom_info.append(((model, index), float(x), float(y), float(z)))",
+            space={"atom_info": atom_info}
+        )
+        if not atom_info:
+            return [], np.empty((0, 3), dtype=float)
+
+        ids = [item[0] for item in atom_info]
+        coords = np.array([[item[1], item[2], item[3]] for item in atom_info], dtype=float)
+        return ids, coords
+
     def calculate_distances(
         self,
         selection1: str,
@@ -34,6 +67,7 @@ class ContactAnalyzer:
     ) -> Dict[str, Any]:
         """
         Measure pairwise atomic distances between two selections within cutoff.
+        Correctly excludes self-contacts (d = 0.0) and avoids duplicate pair counting when selections overlap.
         """
         def _exec():
             c1 = self.cmd.count_atoms(selection1)
@@ -42,20 +76,36 @@ class ContactAnalyzer:
                 raise ValueError(f"One or both selections contain 0 atoms ({selection1}: {c1}, {selection2}: {c2}).")
 
             self.cmd.delete(name)
-            # cmd.distance creates visual measurement object in PyMOL
+            # cmd.distance creates visual measurement dashes in PyMOL
             dist_val = self.cmd.distance(name, selection1, selection2, cutoff=float(cutoff), mode=0)
 
-            # Extract coordinates to compute detailed contact pair distribution
-            coords1 = self.cmd.get_coords(selection1, 1)
-            coords2 = self.cmd.get_coords(selection2, 1)
+            ids1, coords1 = self._get_atoms_with_coords(selection1)
+            ids2, coords2 = self._get_atoms_with_coords(selection2)
 
             pairs_within_cutoff = []
-            if coords1 is not None and coords2 is not None and len(coords1) > 0 and len(coords2) > 0:
-                # Pairwise distance matrix using numpy
+            if len(coords1) > 0 and len(coords2) > 0:
                 diff = coords1[:, np.newaxis, :] - coords2[np.newaxis, :, :]
                 dist_matrix = np.sqrt(np.sum(diff**2, axis=-1))
 
-                within = dist_matrix[dist_matrix <= cutoff]
+                # Check if identical sets (e.g. internal contacts)
+                if ids1 == ids2:
+                    # Upper triangle only, strictly above diagonal (k=1)
+                    mask = (dist_matrix <= cutoff) & np.triu(np.ones_like(dist_matrix, dtype=bool), k=1)
+                    within = dist_matrix[mask]
+                else:
+                    common_ids = set(ids1) & set(ids2)
+                    if common_ids:
+                        mask = dist_matrix <= cutoff
+                        for i, id1 in enumerate(ids1):
+                            for j, id2 in enumerate(ids2):
+                                if id1 == id2:
+                                    mask[i, j] = False
+                                elif id1 in common_ids and id2 in common_ids and id1 > id2:
+                                    mask[i, j] = False
+                        within = dist_matrix[mask]
+                    else:
+                        within = dist_matrix[dist_matrix <= cutoff]
+
                 pairs_within_cutoff = [round(float(d), 2) for d in np.sort(within)]
 
             pair_count = len(pairs_within_cutoff)
@@ -67,6 +117,7 @@ class ContactAnalyzer:
             mean_dist = round(float(np.mean(pairs_within_cutoff)), 2) if pairs_within_cutoff else min_dist
 
             return {
+                "success": True,
                 "distance_object": name,
                 "selection1": selection1,
                 "selection2": selection2,
@@ -101,9 +152,13 @@ class ContactAnalyzer:
             stored_res = set()
             self.cmd.iterate(query, "stored_res.add((chain, resi, resn))", space={"stored_res": stored_res})
 
-            res_list = sorted([{"chain": r[0], "resi": r[1], "resn": r[2]} for r in stored_res], key=lambda x: (x["chain"], int(x["resi"]) if x["resi"].isdigit() else x["resi"]))
+            res_list = sorted(
+                [{"chain": r[0], "resi": str(r[1]), "resn": r[2]} for r in stored_res],
+                key=lambda x: (x["chain"], resi_sort_key(x["resi"]))
+            )
 
             return {
+                "success": True,
                 "target_selection": target_selection,
                 "cutoff_angstroms": cutoff,
                 "surrounding_scope": surrounding_scope,
@@ -132,27 +187,44 @@ class ContactAnalyzer:
                 raise ValueError(f"Selection has 0 atoms ({selection1}: {c1}, {selection2}: {c2}).")
 
             self.cmd.delete(name)
-            # mode=2 in cmd.distance finds polar contacts (donor/acceptor geometry)
             dist_val = self.cmd.distance(name, selection1, selection2, cutoff=float(cutoff), mode=2)
 
             # Polar atoms filter
             polar1_sel = f"({selection1}) and (elem N,O)"
             polar2_sel = f"({selection2}) and (elem N,O)"
 
-            coords1 = self.cmd.get_coords(polar1_sel, 1)
-            coords2 = self.cmd.get_coords(polar2_sel, 1)
+            ids1, coords1 = self._get_atoms_with_coords(polar1_sel)
+            ids2, coords2 = self._get_atoms_with_coords(polar2_sel)
 
             polar_dists = []
-            if coords1 is not None and coords2 is not None and len(coords1) > 0 and len(coords2) > 0:
+            if len(coords1) > 0 and len(coords2) > 0:
                 diff = coords1[:, np.newaxis, :] - coords2[np.newaxis, :, :]
                 mat = np.sqrt(np.sum(diff**2, axis=-1))
-                within = mat[mat <= cutoff]
+
+                if ids1 == ids2:
+                    mask = (mat <= cutoff) & np.triu(np.ones_like(mat, dtype=bool), k=1)
+                    within = mat[mask]
+                else:
+                    common_ids = set(ids1) & set(ids2)
+                    if common_ids:
+                        mask = mat <= cutoff
+                        for i, id1 in enumerate(ids1):
+                            for j, id2 in enumerate(ids2):
+                                if id1 == id2:
+                                    mask[i, j] = False
+                                elif id1 in common_ids and id2 in common_ids and id1 > id2:
+                                    mask[i, j] = False
+                        within = mat[mask]
+                    else:
+                        within = mat[mat <= cutoff]
+
                 polar_dists = [round(float(d), 2) for d in np.sort(within)]
 
             if len(polar_dists) == 0 and dist_val > 0 and dist_val <= cutoff:
                 polar_dists = [round(float(dist_val), 2)]
 
             return {
+                "success": True,
                 "distance_object": name,
                 "selection1": selection1,
                 "selection2": selection2,
@@ -174,19 +246,32 @@ class ContactAnalyzer:
     ) -> Dict[str, Any]:
         """
         Comprehensive structural analysis of a ligand binding pocket.
+        Automatically restricts protein search to ligand's parent structure when multiple structures are loaded.
         """
         def _exec():
             lig_count = self.cmd.count_atoms(ligand_selection)
             if lig_count == 0:
                 raise ValueError(f"Ligand selection '{ligand_selection}' has 0 atoms.")
 
-            protein_sel = f"model {protein_object} and polymer.protein" if protein_object else "polymer.protein"
+            # Auto-detect parent model if not specified to prevent multi-structure contamination
+            target_obj = protein_object
+            if not target_obj:
+                models = []
+                self.cmd.iterate(ligand_selection, "models.append(model)", space={"models": models})
+                unique_models = sorted(list(set(models)))
+                if len(unique_models) == 1:
+                    target_obj = unique_models[0]
+
+            protein_sel = f"model {target_obj} and polymer.protein" if target_obj else "polymer.protein"
             pocket_sel = f"byres ({protein_sel} within {cutoff} of ({ligand_selection}))"
 
             stored_res = set()
             self.cmd.iterate(pocket_sel, "stored_res.add((chain, resi, resn))", space={"stored_res": stored_res})
 
-            pocket_residues = sorted([{"chain": r[0], "resi": r[1], "resn": r[2]} for r in stored_res], key=lambda x: (x["chain"], int(x["resi"]) if x["resi"].isdigit() else x["resi"]))
+            pocket_residues = sorted(
+                [{"chain": r[0], "resi": str(r[1]), "resn": r[2]} for r in stored_res],
+                key=lambda x: (x["chain"], resi_sort_key(x["resi"]))
+            )
 
             # Classify pocket residues
             hydrophobic = [r for r in pocket_residues if r["resn"] in self.HYDROPHOBIC_RESIDUES]
@@ -199,7 +284,6 @@ class ContactAnalyzer:
             self.cmd.delete(polar_obj)
             dist_val = self.cmd.distance(polar_obj, ligand_selection, pocket_sel, cutoff=3.5, mode=2)
 
-            # Measure distances
             polar_dists = []
             coords_lig = self.cmd.get_coords(f"({ligand_selection}) and (elem N,O)", 1)
             coords_pocket = self.cmd.get_coords(f"({pocket_sel}) and (elem N,O)", 1)
@@ -213,8 +297,10 @@ class ContactAnalyzer:
                 polar_dists = [round(float(dist_val), 2)]
 
             return {
+                "success": True,
                 "ligand_selection": ligand_selection,
                 "cutoff_angstroms": cutoff,
+                "parent_protein_object": target_obj,
                 "total_pocket_residues": len(pocket_residues),
                 "pocket_residues": pocket_residues,
                 "composition": {

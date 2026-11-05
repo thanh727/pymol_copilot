@@ -39,23 +39,22 @@ class PyMOLExecutor:
     def run_safe(self, func: Callable[..., Any], *args, **kwargs) -> Any:
         """
         Run a callable safely. Dispatches to PyMOL GUI thread if available and needed.
+        Does not hold internal state lock during blocking GUI dispatch to prevent deadlocks.
         """
-        with self._lock:
-            # Check if PyMOL has registered a GUI thread caller
-            gui_caller = getattr(self.cmd, "_call_in_gui_thread", None)
-            if callable(gui_caller):
-                try:
-                    return gui_caller(lambda: func(*args, **kwargs))
-                except Exception as e:
-                    raise PyMOLExecutionError(f"PyMOL command failed: {e}") from e
-            else:
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    raise PyMOLExecutionError(f"PyMOL command failed: {e}") from e
+        gui_caller = getattr(self.cmd, "_call_in_gui_thread", None)
+        if callable(gui_caller):
+            try:
+                return gui_caller(lambda: func(*args, **kwargs))
+            except Exception as e:
+                raise PyMOLExecutionError(f"PyMOL command failed: {e}") from e
+        else:
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                raise PyMOLExecutionError(f"PyMOL command failed: {e}") from e
 
     def record_command(self, pml_line: str, tool_name: str, args: Dict[str, Any], result: Any):
-        """Record executed command for history and script generation."""
+        """Record executed command for history and script generation with thread safety."""
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         record = {
             "timestamp": timestamp,
@@ -64,16 +63,19 @@ class PyMOLExecutor:
             "pml": pml_line,
             "result_summary": str(result)[:200]
         }
-        self._execution_history.append(record)
-        if pml_line:
-            self._recorded_pml_commands.append(pml_line)
+        with self._lock:
+            self._execution_history.append(record)
+            if pml_line:
+                self._recorded_pml_commands.append(pml_line)
 
     def get_history(self) -> List[Dict[str, Any]]:
-        return list(self._execution_history)
+        with self._lock:
+            return list(self._execution_history)
 
     def clear_history(self):
-        self._execution_history.clear()
-        self._recorded_pml_commands.clear()
+        with self._lock:
+            self._execution_history.clear()
+            self._recorded_pml_commands.clear()
 
     def get_pml_script(self) -> str:
         """Return all recorded PyMOL commands as a .pml script."""
@@ -84,7 +86,9 @@ class PyMOLExecutor:
             "# ============================================================",
             ""
         ]
-        return "\n".join(header + self._recorded_pml_commands) + "\n"
+        with self._lock:
+            lines = list(self._recorded_pml_commands)
+        return "\n".join(header + lines) + "\n"
 
     # --- Core PyMOL operations with parameter validation ---
 
@@ -139,13 +143,24 @@ class PyMOLExecutor:
             elif c.lower() == "byelement" or c.lower() == "elem":
                 self.cmd.util.cnc(selection)
             elif c.lower().startswith("rainbow"):
-                self.cmd.rainbow(selection)
+                self.cmd.spectrum("count", selection=selection)
             else:
                 self.cmd.color(c, selection)
             return {"color": c, "selection": selection}
 
         res = self.run_safe(_exec)
-        self.record_command(f"color {c}, {selection}", "color_selection", {"color": c, "selection": selection}, res)
+
+        # Record valid PyMOL command according to color mode
+        if c.lower() == "bychain":
+            pml_cmd = f"util.color_chains('({selection})')"
+        elif c.lower() in ("byelement", "elem"):
+            pml_cmd = f"util.cnc('({selection})')"
+        elif c.lower().startswith("rainbow"):
+            pml_cmd = f"spectrum count, selection=({selection})"
+        else:
+            pml_cmd = f"color {c}, ({selection})"
+
+        self.record_command(pml_cmd, "color_selection", {"color": c, "selection": selection}, res)
         return res
 
     def select(self, name: str, selection: str) -> int:

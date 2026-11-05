@@ -4,6 +4,7 @@ Inspection of loaded PyMOL structures, chains, residues, ligands, and selections
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 from .executor import PyMOLExecutor
+from ..analysis.contacts import resi_sort_key
 
 
 class StructureInspector:
@@ -47,9 +48,16 @@ class StructureInspector:
                 ligand_res = [{"resn": r[0], "resi": r[1], "chain": r[2]} for r in sorted(stored_ligands)]
 
             # Bounding box
-            extent = self.cmd.get_extent(object_name)
-            min_pt, max_pt = extent[0], extent[1]
-            box_dims = [round(max_pt[i] - min_pt[i], 2) for i in range(3)]
+            if total_atoms > 0:
+                extent = self.cmd.get_extent(object_name)
+                min_pt, max_pt = extent[0], extent[1]
+                box_dims = [round(max_pt[i] - min_pt[i], 2) for i in range(3)]
+                min_c = [round(x, 2) for x in min_pt]
+                max_c = [round(x, 2) for x in max_pt]
+            else:
+                box_dims = [0.0, 0.0, 0.0]
+                min_c = [0.0, 0.0, 0.0]
+                max_c = [0.0, 0.0, 0.0]
 
             return {
                 "name": object_name,
@@ -60,10 +68,10 @@ class StructureInspector:
                 "solvent_atoms": solvent_atoms,
                 "ion_atoms": ion_atoms,
                 "chains": chains,
-                "ligands": ligand_res,
+                "ligands": sorted(ligand_res, key=lambda x: (x["chain"], resi_sort_key(x["resi"]))),
                 "bounding_box_angstroms": box_dims,
-                "min_coords": [round(x, 2) for x in min_pt],
-                "max_coords": [round(x, 2) for x in max_pt]
+                "min_coords": min_c,
+                "max_coords": max_c
             }
 
         return self.executor.run_safe(_exec)
@@ -129,7 +137,10 @@ class StructureInspector:
                 "atom_count": atom_count,
                 "chains": sorted(list(stored_chains)),
                 "residue_count": len(stored_res),
-                "residues": [{"chain": r[0], "resi": r[1], "resn": r[2]} for r in sorted(stored_res)]
+                "residues": sorted(
+                    [{"chain": r[0], "resi": str(r[1]), "resn": r[2]} for r in stored_res],
+                    key=lambda x: (x["chain"], resi_sort_key(x["resi"]))
+                )
             }
 
         return self.executor.run_safe(_exec)
