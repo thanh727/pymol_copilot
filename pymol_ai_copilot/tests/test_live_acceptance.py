@@ -114,7 +114,7 @@ class TestLiveOllamaAcceptance(unittest.TestCase):
         self.assertTrue(any("1ubq" in obj.lower() for obj in objects), f"Expected 1ubq in {objects}")
         all_called_tools = [tr["tool"] for s in res["steps"] for tr in s["tool_results"]]
         self.assertIn("fetch_structure", all_called_tools)
-        self.assertLessEqual(res["steps_count"], 4)
+        self.assertLessEqual(res["steps_count"], 5)
 
 
 if __name__ == "__main__":

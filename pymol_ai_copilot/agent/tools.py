@@ -185,21 +185,22 @@ def tool_highlight_residues(selection: str, representation: str = "sticks", colo
         return {"success": False, "error": str(e)}
 
 
-def tool_label_residues(selection: str, label_type: str = "resn_resi") -> Dict[str, Any]:
+def tool_label_residues(selection: str, label_type: str = "resn_resi", label: Optional[str] = None, **kwargs) -> Dict[str, Any]:
     """Label residues with identifier text (resn_resi, resi, or custom)."""
+    effective_type = label if label is not None else label_type
     try:
         def _exec():
-            if label_type == "resn_resi":
+            if effective_type == "resn_resi":
                 GLOBAL_CONTEXT.executor.cmd.label(selection, '"%s%s" % (resn, resi)')
-            elif label_type == "resi":
+            elif effective_type == "resi":
                 GLOBAL_CONTEXT.executor.cmd.label(selection, "resi")
-            elif label_type == "clear":
+            elif effective_type == "clear":
                 GLOBAL_CONTEXT.executor.cmd.label(selection, '""')
             else:
-                GLOBAL_CONTEXT.executor.cmd.label(selection, f'"{label_type}"')
+                GLOBAL_CONTEXT.executor.cmd.label(selection, f'"{effective_type}"')
 
         GLOBAL_CONTEXT.executor.run_safe(_exec)
-        return {"success": True, "labeled_selection": selection, "label_type": label_type}
+        return {"success": True, "labeled_selection": selection, "label_type": effective_type}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

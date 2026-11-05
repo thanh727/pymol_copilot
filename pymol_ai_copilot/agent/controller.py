@@ -11,7 +11,7 @@ from .ollama_client import OllamaClient, OllamaClientError
 from .prompts import format_context_prompt
 from .tool_registry import GLOBAL_REGISTRY, ToolRegistry
 from .tools import GLOBAL_CONTEXT
-from .workflow_engine import GLOBAL_WORKFLOW_REGISTRY, WorkflowDefinition
+from .workflow_engine import GLOBAL_WORKFLOW_REGISTRY, WorkflowDefinition, WorkflowSession, WorkflowState
 
 
 class AgentStep:
@@ -107,8 +107,11 @@ class AgentController:
         except Exception:
             loaded_objs = []
         matched_wf, entities, confidence = GLOBAL_WORKFLOW_REGISTRY.match_workflow(user_instruction, loaded_objs)
+        wf_session: Optional[WorkflowSession] = None
 
         if matched_wf:
+            wf_session = WorkflowSession(matched_wf, entities, intent_match_confidence=confidence)
+            wf_session.start()
             # Context-dependent tool scoping: expose only approved relevant capabilities
             tools_schema = self.registry.get_ollama_tools(subset=matched_wf.required_capabilities)
             # Inject declarative workflow execution guidance
@@ -290,6 +293,9 @@ class AgentController:
                     "result": tool_res
                 })
 
+                if wf_session:
+                    wf_session.record_tool_call(t_name, t_args, tool_res, step.duration_ms)
+
                 if step_callback:
                     step_callback({
                         "type": "tool_result",
@@ -348,6 +354,10 @@ class AgentController:
 
         total_time = round(time.time() - total_start_time, 2)
 
+        exec_record = None
+        if wf_session:
+            exec_record = wf_session.finalize(cancelled=self._cancelled)
+
         # Scientific provenance and verification audit
         provenance = {
             "workflow_id": matched_wf.workflow_id if matched_wf else "ad-hoc",
@@ -366,6 +376,9 @@ class AgentController:
         if all_results and all(not r.get("success", False) for r in all_results):
             is_success = False
 
+        if exec_record and exec_record.state == WorkflowState.FAILED:
+            is_success = False
+
         return {
             "success": is_success,
             "status": "success" if is_success else ("cancelled" if self._cancelled else "failed"),
@@ -376,5 +389,8 @@ class AgentController:
             "total_duration_seconds": total_time,
             "model_used": self.model_name,
             "workflow": matched_wf.workflow_id if matched_wf else None,
+            "workflow_execution": exec_record.to_dict() if exec_record else None,
+            "workflow_state": exec_record.state.value if exec_record else None,
+            "scientific_measurements": exec_record.scientific_measurements if exec_record else {},
             "provenance": provenance
         }

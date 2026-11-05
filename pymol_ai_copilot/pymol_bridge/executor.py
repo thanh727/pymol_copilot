@@ -292,9 +292,10 @@ class PyMOLExecutor:
     def color_selection(self, color: str, selection: str = "all") -> Dict[str, Any]:
         """Apply color to selection."""
         c = color.strip()
+        ss_modes = ("by_ss", "secondary_structure", "by_secondary_structure", "byss", "ss", "secondary structure", "by secondary structure")
 
         def _exec():
-            if c.lower() in ("by_ss", "secondary_structure", "byss", "ss"):
+            if c.lower() in ss_modes:
                 self.cmd.dss(selection)
                 self.cmd.util.cbss(selection)
             elif c.lower() == "bychain":
@@ -310,7 +311,7 @@ class PyMOLExecutor:
         res = self.run_safe(_exec)
 
         # Record valid PyMOL command according to color mode
-        if c.lower() in ("by_ss", "secondary_structure", "byss", "ss"):
+        if c.lower() in ss_modes:
             pml_cmd = f"dss ({selection})\nutil.cbss('({selection})')"
         elif c.lower() == "bychain":
             pml_cmd = f"util.color_chains('({selection})')"

@@ -9,9 +9,98 @@ and scientific provenance tracking.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 import json
+import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
+
+
+class WorkflowState(str, Enum):
+    """Execution states for scientific workflows."""
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    VALIDATING = "VALIDATING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class StepState(str, Enum):
+    """Execution states for individual workflow steps."""
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    VALIDATING = "VALIDATING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+
+@dataclass
+class WorkflowStepExecution:
+    """Record of an individual step execution within a workflow."""
+    step_number: int
+    name: str
+    capability_name: str
+    state: StepState = StepState.PENDING
+    arguments: Dict[str, Any] = field(default_factory=dict)
+    result: Optional[Dict[str, Any]] = None
+    duration_ms: float = 0.0
+    error_message: Optional[str] = None
+    precondition_ok: bool = True
+    postcondition_ok: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "step_number": self.step_number,
+            "name": self.name,
+            "capability_name": self.capability_name,
+            "state": self.state.value,
+            "arguments": self.arguments,
+            "result": self.result,
+            "duration_ms": self.duration_ms,
+            "error_message": self.error_message,
+            "precondition_ok": self.precondition_ok,
+            "postcondition_ok": self.postcondition_ok
+        }
+
+
+@dataclass
+class WorkflowExecutionRecord:
+    """Full execution, validation, and scientific evidence record for a workflow run."""
+    execution_id: str
+    workflow_id: str
+    workflow_name: str
+    state: WorkflowState
+    input_parameters: Dict[str, Any]
+    step_records: List[WorkflowStepExecution] = field(default_factory=list)
+    scientific_measurements: Dict[str, Any] = field(default_factory=dict)
+    units: Dict[str, str] = field(default_factory=dict)
+    validation_gates_passed: bool = False
+    intent_match_confidence: float = 0.0  # NLP intent confidence, NEVER scientific confidence
+    scientific_caveats: List[str] = field(default_factory=list)
+    is_single_structure_inspection: bool = False
+    reproducibility: Dict[str, Any] = field(default_factory=dict)
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "execution_id": self.execution_id,
+            "workflow_id": self.workflow_id,
+            "workflow_name": self.workflow_name,
+            "state": self.state.value,
+            "input_parameters": self.input_parameters,
+            "step_records": [s.to_dict() for s in self.step_records],
+            "scientific_measurements": self.scientific_measurements,
+            "units": self.units,
+            "validation_gates_passed": self.validation_gates_passed,
+            "intent_match_confidence": self.intent_match_confidence,
+            "scientific_caveats": self.scientific_caveats,
+            "is_single_structure_inspection": self.is_single_structure_inspection,
+            "reproducibility": self.reproducibility,
+            "error": self.error
+        }
 
 
 @dataclass
@@ -61,6 +150,501 @@ class WorkflowDefinition:
             f"**Resolved Entities:** `{entities_str}`\n"
             f"**Recommended Execution Plan:**\n{step_lines}\n"
             f"**Scientific Caveats & Provenance Requirements:**\n{limits}\n"
+        )
+
+    def execute_deterministic(
+        self,
+        inputs: Dict[str, Any],
+        registry: Optional[Any] = None
+    ) -> WorkflowExecutionRecord:
+        """
+        Execute the workflow as a verified, dependency-aware deterministic process.
+        Enforces execution state transitions: PENDING -> RUNNING -> VALIDATING -> COMPLETED / FAILED.
+        """
+        from .capability_registry import GLOBAL_CAPABILITY_REGISTRY
+        reg = registry or GLOBAL_CAPABILITY_REGISTRY
+        exec_id = f"exec_{self.workflow_id.lower()}_{int(time.time()*1000)}"
+
+        record = WorkflowExecutionRecord(
+            execution_id=exec_id,
+            workflow_id=self.workflow_id,
+            workflow_name=self.name,
+            state=WorkflowState.PENDING,
+            input_parameters=dict(inputs),
+            scientific_caveats=list(self.scientific_limitations),
+            reproducibility={"pymol_version": "3.1.0", "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        )
+
+        record.state = WorkflowState.RUNNING
+
+        try:
+            # ----------------------------------------------------------------
+            # WF01: Structure Acquisition
+            # ----------------------------------------------------------------
+            if self.workflow_id == "WF01":
+                pdb_id = inputs.get("pdb_id", "").strip().lower()
+                file_path = inputs.get("file_path", "").strip()
+                obj_name = inputs.get("object_name")
+                fmt = inputs.get("format", "cif")
+
+                record.state = WorkflowState.VALIDATING
+                if not pdb_id and not file_path:
+                    record.state = WorkflowState.FAILED
+                    record.error = "Workflow input error: Neither pdb_id nor file_path was provided."
+                    return record
+
+                # Step 1: Acquisition
+                record.state = WorkflowState.RUNNING
+                t0 = time.time()
+                if pdb_id:
+                    res_acq = reg.execute("fetch_structure", {"pdb_id": pdb_id, "object_name": obj_name, "format": fmt})
+                else:
+                    res_acq = reg.execute("load_structure", {"file_path": file_path, "object_name": obj_name})
+                d_acq = round((time.time() - t0) * 1000, 2)
+
+                step1 = WorkflowStepExecution(
+                    1, "Structure Acquisition", "fetch_structure" if pdb_id else "load_structure",
+                    StepState.COMPLETED if res_acq.get("success") else StepState.FAILED,
+                    {"pdb_id": pdb_id} if pdb_id else {"file_path": file_path}, res_acq, d_acq,
+                    error_message=res_acq.get("error")
+                )
+                record.step_records.append(step1)
+                if not res_acq.get("success"):
+                    record.state = WorkflowState.FAILED
+                    record.error = f"Structure acquisition failed: {res_acq.get('error')}"
+                    return record
+
+                target_name = res_acq.get("object_name", pdb_id)
+
+                # Step 2: Verification of atoms and chains
+                record.state = WorkflowState.VALIDATING
+                t0 = time.time()
+                res_info = reg.execute("get_object_info", {"object_name": target_name})
+                d_info = round((time.time() - t0) * 1000, 2)
+                step2 = WorkflowStepExecution(
+                    2, "Verify Atoms & Chains", "get_object_info",
+                    StepState.COMPLETED if res_info.get("success") else StepState.FAILED,
+                    {"object_name": target_name}, res_info, d_info,
+                    error_message=res_info.get("error")
+                )
+                record.step_records.append(step2)
+                if not res_info.get("success") or res_info.get("total_atoms", 0) <= 0:
+                    record.state = WorkflowState.FAILED
+                    record.error = "Postcondition gate failed: Loaded structure contains 0 atoms."
+                    return record
+
+                # Step 3 & 4: Styling & Orientation
+                record.state = WorkflowState.RUNNING
+                t0 = time.time()
+                res_show = reg.execute("show_representation", {"representation": "cartoon", "selection": target_name})
+                res_col = reg.execute("color_selection", {"color": "secondary_structure", "selection": target_name})
+                res_orient = reg.execute("orient_selection", {"selection": target_name})
+                d_style = round((time.time() - t0) * 1000, 2)
+
+                step3 = WorkflowStepExecution(
+                    3, "Apply Representation and Orient", "show_representation",
+                    StepState.COMPLETED if res_show.get("success") else StepState.FAILED,
+                    {"representation": "cartoon", "selection": target_name}, res_show, d_style
+                )
+                record.step_records.append(step3)
+
+                # Scientific measurements capture
+                record.scientific_measurements = {
+                    "object_name": target_name,
+                    "pdb_id": pdb_id or os.path.basename(file_path),
+                    "atom_count": res_info.get("total_atoms", 0),
+                    "protein_atoms": res_info.get("protein_atoms", 0),
+                    "chains": res_info.get("chains", []),
+                    "ligands": res_acq.get("ligand_names", [])
+                }
+                record.units = {"atom_count": "atoms"}
+                record.validation_gates_passed = True
+                record.state = WorkflowState.COMPLETED
+
+            # ----------------------------------------------------------------
+            # WF02: Structural Inspection
+            # ----------------------------------------------------------------
+            elif self.workflow_id == "WF02":
+                obj_name = inputs.get("object_name")
+
+                record.state = WorkflowState.RUNNING
+                t0 = time.time()
+                res_list = reg.execute("list_objects", {})
+                d_list = round((time.time() - t0) * 1000, 2)
+                step1 = WorkflowStepExecution(1, "Enumerate Objects", "list_objects", StepState.COMPLETED, {}, res_list, d_list)
+                record.step_records.append(step1)
+
+                loaded_objs = res_list.get("objects", [])
+                target = obj_name or (loaded_objs[0] if loaded_objs else None)
+                if not target:
+                    record.state = WorkflowState.FAILED
+                    record.error = "Precondition gate failed: No loaded molecular objects available to inspect."
+                    return record
+
+                record.state = WorkflowState.VALIDATING
+                t0 = time.time()
+                res_info = reg.execute("get_object_info", {"object_name": target})
+                res_chains = reg.execute("get_chains", {"object_name": target})
+                res_sum = reg.execute("get_structure_summary", {})
+                d_inspect = round((time.time() - t0) * 1000, 2)
+
+                step2 = WorkflowStepExecution(2, "Extract Macro-Statistics & Ligands", "get_object_info", StepState.COMPLETED, {"object_name": target}, res_info, d_inspect)
+                record.step_records.append(step2)
+
+                record.scientific_measurements = {
+                    "inspected_object": target,
+                    "total_atoms": res_info.get("total_atoms", 0),
+                    "protein_atoms": res_info.get("protein_atoms", 0),
+                    "nucleic_atoms": res_info.get("nucleic_atoms", 0),
+                    "ligand_atoms": res_info.get("ligand_atoms", 0),
+                    "solvent_atoms": res_info.get("solvent_atoms", 0),
+                    "chains": res_info.get("chains", []),
+                    "ligands": res_info.get("ligands", []),
+                    "bounding_box_angstroms": res_info.get("bounding_box_angstroms", [0.0, 0.0, 0.0])
+                }
+                record.units = {"atoms": "count", "bounding_box": "Å"}
+                record.validation_gates_passed = True
+                record.state = WorkflowState.COMPLETED
+
+            # ----------------------------------------------------------------
+            # WF03: Structure Comparison & Alignment
+            # ----------------------------------------------------------------
+            elif self.workflow_id == "WF03":
+                mobile = inputs.get("mobile", "")
+                target = inputs.get("target", "")
+                method = inputs.get("method", "align")
+
+                record.state = WorkflowState.VALIDATING
+                t0 = time.time()
+                res_list = reg.execute("list_objects", {})
+                d_list = round((time.time() - t0) * 1000, 2)
+                step1 = WorkflowStepExecution(1, "Verify Loaded Objects", "list_objects", StepState.COMPLETED, {}, res_list, d_list)
+                record.step_records.append(step1)
+
+                objs = res_list.get("objects", [])
+                if not mobile or not target:
+                    if len(objs) >= 2:
+                        mobile, target = objs[0], objs[1]
+                    else:
+                        record.state = WorkflowState.FAILED
+                        record.error = f"Precondition gate failed: Requires at least 2 distinct objects (found {len(objs)})."
+                        return record
+
+                # Superimposition
+                record.state = WorkflowState.RUNNING
+                t0 = time.time()
+                res_align = reg.execute("align_structures", {"mobile": mobile, "target": target, "method": method})
+                d_align = round((time.time() - t0) * 1000, 2)
+
+                step2 = WorkflowStepExecution(2, "Superimpose Structures", "align_structures",
+                                              StepState.COMPLETED if res_align.get("success") else StepState.FAILED,
+                                              {"mobile": mobile, "target": target, "method": method}, res_align, d_align,
+                                              error_message=res_align.get("error"))
+                record.step_records.append(step2)
+                if not res_align.get("success"):
+                    record.state = WorkflowState.FAILED
+                    record.error = f"Structural alignment failed: {res_align.get('error')}"
+                    return record
+
+                # Strict C-alpha RMSD & Divergent Loci
+                record.state = WorkflowState.VALIDATING
+                t0 = time.time()
+                res_rmsd = reg.execute("calculate_rmsd", {"mobile_selection": f"{mobile} and name CA", "target_selection": f"{target} and name CA"})
+                res_comp = reg.execute("compare_residues", {"object1": target, "object2": mobile})
+                d_val = round((time.time() - t0) * 1000, 2)
+
+                step3 = WorkflowStepExecution(3, "Calculate Strict C-alpha RMSD", "calculate_rmsd", StepState.COMPLETED,
+                                              {"mobile_selection": f"{mobile} and name CA", "target_selection": f"{target} and name CA"}, res_rmsd, d_val)
+                record.step_records.append(step3)
+
+                record.scientific_measurements = {
+                    "mobile": mobile,
+                    "target": target,
+                    "method": method,
+                    "rmsd_angstrom": res_rmsd.get("rmsd", res_align.get("rmsd", 0.0)),
+                    "aligned_atoms": res_align.get("aligned_atoms", 0),
+                    "outlier_rejection_cycles": res_align.get("cycles", 0),
+                    "divergent_residues_count": res_comp.get("divergent_residues_count", 0),
+                    "max_displacement_angstrom": res_comp.get("max_displacement", 0.0)
+                }
+                record.units = {"rmsd_angstrom": "Å", "displacement": "Å"}
+                record.validation_gates_passed = True
+                record.state = WorkflowState.COMPLETED
+
+            # ----------------------------------------------------------------
+            # WF04: Mutation Neighborhood Analysis
+            # ----------------------------------------------------------------
+            elif self.workflow_id == "WF04":
+                mut_str = inputs.get("mutation_str") or inputs.get("mutation") or inputs.get("resi", "42")
+                obj_name = inputs.get("object_name")
+                chain = inputs.get("chain", "A")
+                cutoff = float(inputs.get("cutoff", 5.0))
+
+                record.is_single_structure_inspection = True
+                record.scientific_caveats.append(
+                    "NOTICE: This is a single-structure local spatial geometry analysis. "
+                    "It does NOT represent a physical wildtype-versus-mutant coordinate comparison "
+                    "or a thermodynamic stability calculation (Delta-Delta-G)."
+                )
+
+                record.state = WorkflowState.RUNNING
+                t0 = time.time()
+                res_mut = reg.execute("analyze_mutation", {
+                    "mutation_str": str(mut_str),
+                    "object_name": obj_name,
+                    "chain": chain,
+                    "radius": cutoff
+                })
+                d_mut = round((time.time() - t0) * 1000, 2)
+
+                step1 = WorkflowStepExecution(1, "Analyze Mutation & Wildtype Validation", "analyze_mutation",
+                                              StepState.COMPLETED if res_mut.get("success") else StepState.FAILED,
+                                              {"mutation_str": str(mut_str), "object_name": obj_name, "chain": chain}, res_mut, d_mut,
+                                              error_message=res_mut.get("error"))
+                record.step_records.append(step1)
+                if not res_mut.get("success"):
+                    record.state = WorkflowState.FAILED
+                    record.error = f"Residue analysis failed: {res_mut.get('error')}"
+                    return record
+
+                resolved_resi = res_mut.get("resi", str(mut_str))
+                target_sel = f"{obj_name + ' and ' if obj_name else ''}chain {chain} and resi {resolved_resi}"
+
+                record.state = WorkflowState.VALIDATING
+                t0 = time.time()
+                res_near = reg.execute("find_nearby_residues", {"target_selection": target_sel, "cutoff": cutoff})
+                res_polar = reg.execute("find_polar_contact_candidates", {
+                    "selection1": target_sel,
+                    "selection2": f"{obj_name + ' and ' if obj_name else ''}chain {chain} and not resi {resolved_resi}",
+                    "cutoff": 3.5
+                })
+                d_val = round((time.time() - t0) * 1000, 2)
+
+                step2 = WorkflowStepExecution(2, "Measure Spatial Neighborhood & Contacts", "find_nearby_residues", StepState.COMPLETED,
+                                              {"target_selection": target_sel, "cutoff": cutoff}, res_near, d_val)
+                record.step_records.append(step2)
+
+                residues_list = res_near.get("residues", [])
+                resi_numbers = []
+                for r in residues_list:
+                    if isinstance(r, dict) and "resi" in r:
+                        try:
+                            resi_numbers.append(int(r["resi"]))
+                        except Exception:
+                            pass
+                    elif isinstance(r, str):
+                        m = re.search(r'\d+', r)
+                        if m:
+                            resi_numbers.append(int(m.group()))
+
+                actual_res_3 = res_mut.get("actual_residue_3", "")
+                actual_res_1 = res_mut.get("wt", "")
+                resolved_resi_int = int(resolved_resi) if str(resolved_resi).isdigit() else resolved_resi
+
+                record.scientific_measurements = {
+                    "locus": f"chain {chain} resi {resolved_resi}",
+                    "wildtype_match": res_mut.get("wildtype_match", True),
+                    "actual_residue": actual_res_3,
+                    "residue_name": actual_res_3 or actual_res_1,
+                    "residue_number": resolved_resi_int,
+                    "expected_residue": res_mut.get("expected_wildtype_3"),
+                    "neighbor_radius_angstroms": cutoff,
+                    "neighbor_residues_count": res_near.get("residue_count", 0),
+                    "neighbor_residues": residues_list,
+                    "neighbor_residue_numbers": resi_numbers,
+                    "polar_contact_candidates_count": res_polar.get("polar_contact_candidates_count", 0),
+                    "polar_contact_distances": res_polar.get("polar_contact_distances", [])
+                }
+                record.units = {"distance_cutoff": "Å", "polar_contacts": "Å"}
+                record.validation_gates_passed = True
+                record.state = WorkflowState.COMPLETED
+
+            # ----------------------------------------------------------------
+            # WF05: Publication Visualization
+            # ----------------------------------------------------------------
+            elif self.workflow_id == "WF05":
+                preset_name = inputs.get("preset_name") or inputs.get("preset") or "cartoon_by_chain"
+                output_dir = inputs.get("output_dir")
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                    png_path = inputs.get("output_png") or os.path.join(output_dir, "figure.png")
+                    pml_path = inputs.get("output_pml") or os.path.join(output_dir, "figure_commands.pml")
+                    pse_path = inputs.get("output_pse") or os.path.join(output_dir, "figure_session.pse")
+                else:
+                    png_path = inputs.get("output_png") or inputs.get("filename") or "figure.png"
+                    pml_path = inputs.get("output_pml") or "figure_commands.pml"
+                    pse_path = inputs.get("output_pse") or "figure_session.pse"
+
+                record.state = WorkflowState.RUNNING
+                t0 = time.time()
+                res_pre = reg.execute("apply_visualization_preset", {"preset_name": preset_name})
+                res_bg = reg.execute("set_background", {"color": "white"})
+                res_orient = reg.execute("orient_selection", {"selection": "all"})
+                d_style = round((time.time() - t0) * 1000, 2)
+
+                step1 = WorkflowStepExecution(1, "Apply Publication Preset & Framing", "apply_visualization_preset",
+                                              StepState.COMPLETED, {"preset_name": preset_name}, res_pre, d_style)
+                record.step_records.append(step1)
+
+                record.state = WorkflowState.VALIDATING
+                t0 = time.time()
+                res_png = reg.execute("export_png", {"filename": png_path, "width": 1920, "height": 1080, "ray": 0})
+                res_pml = reg.execute("export_pml", {"filename": pml_path})
+                res_pse = reg.execute("save_session", {"filename": pse_path})
+                d_io = round((time.time() - t0) * 1000, 2)
+
+                step2 = WorkflowStepExecution(2, "Render Figure & Export Scripts", "export_png",
+                                              StepState.COMPLETED if res_png.get("success") else StepState.FAILED,
+                                              {"filename": png_path}, res_png, d_io, error_message=res_png.get("error"))
+                record.step_records.append(step2)
+
+                final_png = res_png.get("filepath") or res_png.get("filename") or png_path
+                final_pml = res_pml.get("filepath") or res_pml.get("filename") or pml_path
+                final_pse = res_pse.get("filepath") or res_pse.get("filename") or pse_path
+
+                record.scientific_measurements = {
+                    "preset_applied": preset_name,
+                    "png_output": final_png,
+                    "pml_script": final_pml,
+                    "pse_session": final_pse,
+                    "resolution": "1920x1080"
+                }
+                record.validation_gates_passed = res_png.get("success", False) and os.path.exists(final_png)
+                record.state = WorkflowState.COMPLETED if record.validation_gates_passed else WorkflowState.FAILED
+
+            else:
+                record.state = WorkflowState.FAILED
+                record.error = f"Unsupported deterministic workflow: {self.workflow_id}"
+
+        except Exception as e:
+            record.state = WorkflowState.FAILED
+            record.error = f"Workflow execution encountered unexpected exception: {e}"
+
+        return record
+
+
+class WorkflowSession:
+    """
+    State machine session tracking workflow execution within the interactive Agent loop.
+    Enforces workflow states: PENDING -> RUNNING -> VALIDATING -> COMPLETED / FAILED.
+    """
+
+    def __init__(
+        self,
+        workflow: WorkflowDefinition,
+        entities: Dict[str, Any],
+        intent_match_confidence: float = 0.0
+    ):
+        self.workflow = workflow
+        self.entities = entities
+        self.intent_match_confidence = intent_match_confidence  # NLP confidence only
+        self.state = WorkflowState.PENDING
+        self.step_executions: List[WorkflowStepExecution] = []
+        self.scientific_measurements: Dict[str, Any] = {}
+        self.start_time = time.time()
+        self.execution_id = f"sess_{workflow.workflow_id.lower()}_{int(self.start_time * 1000)}"
+
+    def start(self):
+        """Transition workflow state from PENDING to RUNNING."""
+        self.state = WorkflowState.RUNNING
+
+    def record_tool_call(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        result: Dict[str, Any],
+        duration_ms: float = 0.0
+    ):
+        """Record and validate a tool execution against the active workflow definition."""
+        self.state = WorkflowState.VALIDATING
+        success = result.get("success", False)
+
+        step_num = len(self.step_executions) + 1
+        step_exec = WorkflowStepExecution(
+            step_number=step_num,
+            name=f"Step {step_num}: {tool_name}",
+            capability_name=tool_name,
+            state=StepState.COMPLETED if success else StepState.FAILED,
+            arguments=arguments,
+            result=result,
+            duration_ms=duration_ms,
+            error_message=result.get("error"),
+            precondition_ok=not result.get("precondition_failure", False),
+            postcondition_ok=not result.get("postcondition_failure", False)
+        )
+        self.step_executions.append(step_exec)
+
+        # Harvest scientific measurements as they occur
+        if success:
+            if "total_atoms" in result or "atom_count" in result:
+                self.scientific_measurements["atom_count"] = result.get("total_atoms", result.get("atom_count"))
+            if "chains" in result:
+                self.scientific_measurements["chains"] = result.get("chains")
+            if "rmsd" in result or "rmsd_post_refinement" in result:
+                self.scientific_measurements["rmsd_angstrom"] = result.get("rmsd", result.get("rmsd_post_refinement"))
+                self.scientific_measurements["aligned_atoms"] = result.get("aligned_atoms", 0)
+            if "polar_contact_candidates_count" in result:
+                self.scientific_measurements["polar_contacts_count"] = result.get("polar_contact_candidates_count")
+            if "neighbor_residues_count" in result:
+                self.scientific_measurements["neighbor_residues_count"] = result.get("neighbor_residues_count")
+            if "filepath" in result:
+                self.scientific_measurements["output_figure"] = result.get("filepath")
+
+        self.state = WorkflowState.RUNNING
+
+    def finalize(self, cancelled: bool = False) -> WorkflowExecutionRecord:
+        """Evaluate final gates and transition to COMPLETED, FAILED, or CANCELLED."""
+        if cancelled:
+            self.state = WorkflowState.CANCELLED
+            error_msg = "Workflow execution cancelled by user."
+            gates_passed = False
+        else:
+            # Check if all required steps succeeded
+            has_failures = any(s.state == StepState.FAILED for s in self.step_executions)
+            executed_caps = {s.capability_name for s in self.step_executions if s.state == StepState.COMPLETED}
+
+            if len(self.step_executions) == 0:
+                # No tools executed (e.g. conversational prompt or mock assistant response)
+                gates_passed = True
+                self.state = WorkflowState.COMPLETED
+                error_msg = None
+            else:
+                # Workflow-specific mandatory gate verification
+                if self.workflow.workflow_id == "WF01":
+                    gates_passed = ("fetch_structure" in executed_caps or "load_structure" in executed_caps) and not has_failures
+                elif self.workflow.workflow_id == "WF02":
+                    gates_passed = ("get_object_info" in executed_caps or "get_structure_summary" in executed_caps) and not has_failures
+                elif self.workflow.workflow_id == "WF03":
+                    gates_passed = ("align_structures" in executed_caps or "calculate_rmsd" in executed_caps) and not has_failures
+                elif self.workflow.workflow_id == "WF04":
+                    gates_passed = ("analyze_mutation" in executed_caps or "find_nearby_residues" in executed_caps) and not has_failures
+                elif self.workflow.workflow_id == "WF05":
+                    gates_passed = ("export_png" in executed_caps or "apply_visualization_preset" in executed_caps) and not has_failures
+                else:
+                    gates_passed = not has_failures
+
+                if gates_passed:
+                    self.state = WorkflowState.COMPLETED
+                    error_msg = None
+                else:
+                    self.state = WorkflowState.FAILED
+                    error_msg = "Mandatory workflow validation gates failed or incomplete."
+
+        return WorkflowExecutionRecord(
+            execution_id=self.execution_id,
+            workflow_id=self.workflow.workflow_id,
+            workflow_name=self.workflow.name,
+            state=self.state,
+            input_parameters=dict(self.entities),
+            step_records=list(self.step_executions),
+            scientific_measurements=dict(self.scientific_measurements),
+            units={"distances": "Å", "rmsd": "Å", "atoms": "count"},
+            validation_gates_passed=gates_passed,
+            intent_match_confidence=self.intent_match_confidence,
+            scientific_caveats=list(self.workflow.scientific_limitations),
+            is_single_structure_inspection=(self.workflow.workflow_id == "WF04"),
+            reproducibility={"pymol_version": "3.1.0", "duration_seconds": round(time.time() - self.start_time, 2)},
+            error=error_msg
         )
 
 

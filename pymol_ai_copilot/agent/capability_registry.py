@@ -10,12 +10,42 @@ Treats all unreviewed/unimplemented PyMOL APIs as unauthorized for model executi
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 import json
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from . import tools
+
+
+class ErrorClassification(str, Enum):
+    """Classification of tool execution errors to guide retry policy."""
+    DETERMINISTIC_NON_RETRYABLE = "DETERMINISTIC_NON_RETRYABLE"
+    TRANSIENT_RETRYABLE = "TRANSIENT_RETRYABLE"
+    VALIDATION_FAILURE = "VALIDATION_FAILURE"
+    UNAUTHORIZED_TOOL = "UNAUTHORIZED_TOOL"
+    CANCELLED = "CANCELLED"
+
+
+def classify_error(error_msg_or_exc: Any) -> ErrorClassification:
+    """
+    Classify an execution error to determine whether it can be safely retried.
+    Never retry deterministic errors (invalid IDs, unauthorized tools, missing files).
+    Only transient network timeouts may be retried.
+    """
+    if isinstance(error_msg_or_exc, (TimeoutError, ConnectionError)):
+        return ErrorClassification.TRANSIENT_RETRYABLE
+    msg = str(error_msg_or_exc).lower()
+    if "cancelled" in msg:
+        return ErrorClassification.CANCELLED
+    if "unauthorized" in msg or "not in the authorized" in msg or "not an authorized capability" in msg:
+        return ErrorClassification.UNAUTHORIZED_TOOL
+    if "precondition failed" in msg or "postcondition failed" in msg or "0 atoms" in msg:
+        return ErrorClassification.VALIDATION_FAILURE
+    if any(k in msg for k in ["timeout", "timed out", "connection reset", "connection refused", "network", "disconnected", "remote host"]):
+        return ErrorClassification.TRANSIENT_RETRYABLE
+    return ErrorClassification.DETERMINISTIC_NON_RETRYABLE
 
 
 @dataclass
@@ -224,6 +254,9 @@ class CapabilityRegistry:
                 norm_args["mutation_str"] = norm_args.pop("mutation")
             if "cutoff" in norm_args and "radius" not in norm_args:
                 norm_args["radius"] = norm_args.pop("cutoff")
+        elif name == "label_residues":
+            if "label" in norm_args and "label_type" not in norm_args:
+                norm_args["label_type"] = norm_args.pop("label")
 
         # 2. Execute underlying verified adapter
         try:
@@ -1171,3 +1204,65 @@ class CapabilityRegistry:
 
 
 GLOBAL_CAPABILITY_REGISTRY = CapabilityRegistry()
+
+
+def define_capability(
+    id: Optional[str] = None,
+    name: str = "",
+    api_mapping: str = "",
+    category: str = "",
+    description: str = "",
+    parameters: Optional[Dict[str, Any]] = None,
+    return_schema: Optional[Dict[str, Any]] = None,
+    func: Optional[Callable[..., Dict[str, Any]]] = None,
+    preconditions: Optional[List[str]] = None,
+    postconditions: Optional[List[str]] = None,
+    classification: str = "read_only",
+    risk_level: str = "Tier A (read-only)",
+    requires_confirmation: bool = False,
+    supported_pymol_version: str = ">=2.5, confirmed 3.1.0",
+    registry: Optional[CapabilityRegistry] = None,
+    cap_id: Optional[str] = None
+) -> Capability:
+    """
+    Standardized capability expansion framework for registering new verified PyMOL tools.
+    Validates parameter schema, API mapping, risk policy, and executable callable.
+    Refuses auto-authorization of Tier X or unvetted raw PyMOL APIs.
+    """
+    eff_id = cap_id or id or ""
+    if not eff_id or "." not in eff_id:
+        raise ValueError(f"Capability ID must follow 'domain.name' convention: '{eff_id}'")
+    if not name or not name.isidentifier():
+        raise ValueError(f"Capability name must be a valid Python identifier: '{name}'")
+    if not api_mapping:
+        raise ValueError("Capability must specify underlying PyMOL api_mapping (e.g. 'cmd.fetch')")
+    if not callable(func):
+        raise TypeError(f"Capability '{name}' must provide an executable Python callable")
+    if not isinstance(parameters, dict) or parameters.get("type") != "object":
+        raise ValueError("Parameters must be a JSON Schema dict with type='object'")
+    if "Tier X" in risk_level or risk_level.startswith("blocked") or "prohibited" in risk_level.lower():
+        raise ValueError(f"Tier X / blocked capabilities cannot be authorized for model execution: '{name}'")
+
+    cap = Capability(
+        id=eff_id,
+        name=name,
+        api_mapping=api_mapping,
+        category=category,
+        description=description,
+        parameters=parameters or {"type": "object", "properties": {}},
+        return_schema=return_schema or {"type": "object", "properties": {}},
+        preconditions=preconditions or [],
+        postconditions=postconditions or [],
+        classification=classification,
+        risk_level=risk_level,
+        requires_confirmation=requires_confirmation,
+        runtime_available=True,
+        supported_pymol_version=supported_pymol_version,
+        status="implemented/tested",
+        func=func
+    )
+
+    reg = registry or GLOBAL_CAPABILITY_REGISTRY
+    reg.register(cap)
+    return cap
+

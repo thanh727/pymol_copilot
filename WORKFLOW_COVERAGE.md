@@ -2,7 +2,7 @@
 
 **Date:** November 2026  
 **Environment:** PyMOL 3.1.0 Open-Source (Homebrew `arm64`), Python 3.14.3, macOS 27.2, Ollama (`qwen2.5-coder:7b`, `gemma4:latest`)  
-**Baseline:** 488 discovered PyMOL API/PML functions | 35 authorized, typed tools | 5 reference workflows | 100% test pass rate  
+**Baseline:** 521 cataloged PyMOL API/PML functions | 35 authorized, typed tools | 5 verified deterministic reference workflows | 85 automated tests passing (100% pass rate)  
 
 ---
 
@@ -171,8 +171,32 @@ Any attempt by an LLM to request these callables results in an immediate determi
 
 ---
 
-## 6. Verification Summary
+## 6. Phase 3 Deterministic Workflow State Engine
 
-- **Total Unit & Integration Tests:** 77 tests across 10 test modules.
+In Phase 3, scientific workflow execution was upgraded from prompt-guided sequences to deterministic, state-enforced workflows:
+
+1. **Explicit Workflow State Machine:**
+   - Global states: `PENDING` $\rightarrow$ `RUNNING` $\rightarrow$ `VALIDATING` $\rightarrow$ `COMPLETED` / `FAILED` / `CANCELLED`.
+   - Step states: `PENDING` $\rightarrow$ `RUNNING` $\rightarrow$ `VALIDATING` $\rightarrow$ `COMPLETED` / `FAILED` / `SKIPPED`.
+   - Mandatory validation gates cannot be skipped or bypassed by LLM responses.
+
+2. **Deterministic Execution (`execute_deterministic`):**
+   - Enables verified execution of WF01–WF05 directly through the `CapabilityRegistry` without requiring LLM inference.
+   - All 5 reference workflows produce structured `WorkflowExecutionRecord` entries tracking step durations, arguments, results, and scientific measurements.
+
+3. **Standardized Capability Expansion Framework (`define_capability`):**
+   - Enforces parameter validation, API mapping, and risk tiering.
+   - Strictly blocks dangerous Tier X functions (`os.system`, arbitrary shell execution, unvetted raw APIs).
+
+4. **Strict Intent vs Scientific Confidence Separation:**
+   - NLP matching confidence (`intent_match_confidence`, e.g. 0.95) measures linguistic alignment only.
+   - Scientific measurements (`rmsd_angstrom`, `atom_count`, `neighbor_residues_count`) and validation gate flags (`validation_gates_passed`) are reported independently.
+
+---
+
+## 7. Verification Summary
+
+- **Total Unit & Integration Tests:** 85 tests across 10 test modules.
 - **Pass Rate:** $\mathbf{100\%}$ (0 failures, 0 errors).
-- **Execution Speed:** $< 35\text{ seconds}$ for full headless + live Ollama suite.
+- **Execution Speed:** $< 30\text{ seconds}$ for full headless + live Ollama suite.
+

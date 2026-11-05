@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import unittest
+import numpy as np
 
 try:
     import pymol
@@ -21,9 +22,20 @@ try:
 except Exception:
     PYMOL_AVAILABLE = False
 
-from pymol_ai_copilot.agent.capability_registry import GLOBAL_CAPABILITY_REGISTRY
+from pymol_ai_copilot.agent.capability_registry import (
+    GLOBAL_CAPABILITY_REGISTRY,
+    CapabilityRegistry,
+    ErrorClassification,
+    classify_error,
+    define_capability,
+)
 from pymol_ai_copilot.agent.controller import AgentController
-from pymol_ai_copilot.agent.workflow_engine import GLOBAL_WORKFLOW_REGISTRY
+from pymol_ai_copilot.agent.workflow_engine import (
+    GLOBAL_WORKFLOW_REGISTRY,
+    WorkflowSession,
+    WorkflowState,
+    StepState,
+)
 
 
 class TestReferenceWorkflows(unittest.TestCase):
@@ -283,6 +295,239 @@ class TestReferenceWorkflows(unittest.TestCase):
         self.assertEqual(res["provenance"]["entities"]["mutation_pos"], 132)
         self.assertEqual(res["provenance"]["entities"]["chain"], "A")
         self.assertEqual(res["provenance"]["entities"]["cutoff"], 5.0)
+
+    # ------------------------------------------------------------------------
+    # Phase 3 Deterministic Workflow Execution & Scientific Validation Tests
+    # ------------------------------------------------------------------------
+    def test_deterministic_wf01_acquisition(self):
+        """WF01: Execute deterministic structure acquisition and verify gates."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF01")
+        self.assertIsNotNone(wf)
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        ubq_path = os.path.join(data_dir, "1ubq.pdb")
+
+        rec = wf.execute_deterministic({"file_path": ubq_path, "object_name": "wf01_det_ubq"})
+        self.assertEqual(rec.state, WorkflowState.COMPLETED)
+        self.assertTrue(rec.validation_gates_passed)
+        self.assertEqual(rec.scientific_measurements["atom_count"], 660)
+        self.assertIn("A", rec.scientific_measurements["chains"])
+        self.assertGreaterEqual(len(rec.step_records), 2)
+
+    def test_deterministic_wf02_inspection(self):
+        """WF02: Execute deterministic structural inspection for 1UBQ."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF02")
+        self.assertIsNotNone(wf)
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        ubq_path = os.path.join(data_dir, "1ubq.pdb")
+        cmd.load(ubq_path, "det_1ubq")
+
+        rec = wf.execute_deterministic({"target": "det_1ubq"})
+        self.assertEqual(rec.state, WorkflowState.COMPLETED)
+        self.assertTrue(rec.validation_gates_passed)
+        self.assertEqual(rec.scientific_measurements["total_atoms"], 660)
+        self.assertEqual(rec.scientific_measurements["protein_atoms"], 602)
+        self.assertEqual(rec.scientific_measurements["solvent_atoms"], 58)
+        self.assertEqual(rec.scientific_measurements["chains"], ["A"])
+
+    def test_deterministic_wf03_comparison_and_independent_rmsd(self):
+        """WF03: Execute deterministic structure comparison and independently verify Kabsch RMSD."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF03")
+        self.assertIsNotNone(wf)
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        cmd.load(os.path.join(data_dir, "1ake.pdb"), "det_1ake")
+        cmd.load(os.path.join(data_dir, "4ake.pdb"), "det_4ake")
+
+        rec = wf.execute_deterministic({"mobile": "det_1ake", "target": "det_4ake", "method": "align"})
+        self.assertEqual(rec.state, WorkflowState.COMPLETED)
+        self.assertTrue(rec.validation_gates_passed)
+        self.assertGreater(rec.scientific_measurements["aligned_atoms"], 0)
+        reported_rmsd = rec.scientific_measurements["rmsd_angstrom"]
+        self.assertGreater(reported_rmsd, 0.0)
+
+        # Independent Kabsch RMSD verification on CA coordinates using NumPy SVD
+        c1, c2 = [], []
+        cmd.iterate_state(1, "det_1ake and name CA", "c1.append([x, y, z])", space={"c1": c1})
+        cmd.iterate_state(1, "det_4ake and name CA", "c2.append([x, y, z])", space={"c2": c2})
+        n_atoms = min(len(c1), len(c2))
+        p = np.array(c1[:n_atoms], dtype=float)
+        q = np.array(c2[:n_atoms], dtype=float)
+
+        p_c = p - np.mean(p, axis=0)
+        q_c = q - np.mean(q, axis=0)
+        H = p_c.T @ q_c
+        U, S, Vt = np.linalg.svd(H)
+        R = Vt.T @ U.T
+        if np.linalg.det(R) < 0:
+            Vt[-1, :] *= -1
+            R = Vt.T @ U.T
+        p_aligned = p_c @ R
+        kabsch_rmsd = float(np.sqrt(np.mean(np.sum((p_aligned - q_c) ** 2, axis=-1))))
+
+        # Verify that reported RMSD matches independent Kabsch calculation within numerical tolerance
+        self.assertAlmostEqual(reported_rmsd, kabsch_rmsd, delta=0.1)
+
+    def test_deterministic_wf04_mutation_arg42_contacts_and_scientific_validation(self):
+        """WF04: Analyze Arg42 in 1UBQ, validate distance-based contacts against independent NumPy calculations."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF04")
+        self.assertIsNotNone(wf)
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        cmd.load(os.path.join(data_dir, "1ubq.pdb"), "det_1ubq")
+
+        rec = wf.execute_deterministic({
+            "target": "det_1ubq",
+            "mutation_str": "R42A",
+            "chain": "A",
+            "cutoff": 5.0
+        })
+        self.assertEqual(rec.state, WorkflowState.COMPLETED)
+        self.assertTrue(rec.validation_gates_passed)
+        # Verify explicit distinction of single-structure mutation inspection
+        self.assertTrue(rec.is_single_structure_inspection)
+
+        meas = rec.scientific_measurements
+        self.assertEqual(meas["residue_name"], "ARG")
+        self.assertEqual(meas["residue_number"], 42)
+        self.assertEqual(meas["neighbor_residues_count"], 10)
+
+        # Independent NumPy distance verification across all Cartesian coordinates
+        r42_coords = []
+        cmd.iterate_state(1, "det_1ubq and resi 42", "r42_coords.append([x, y, z])", space={"r42_coords": r42_coords})
+        r42 = np.array(r42_coords, dtype=float)
+
+        indep_neighbors = set()
+        for resi in range(1, 77):
+            if resi == 42:
+                continue
+            res_coords = []
+            cmd.iterate_state(1, f"det_1ubq and resi {resi}", "res_coords.append([x, y, z])", space={"res_coords": res_coords})
+            if not res_coords:
+                continue
+            other = np.array(res_coords, dtype=float)
+            diff = r42[:, None, :] - other[None, :, :]
+            dist = np.sqrt(np.sum(diff ** 2, axis=-1))
+            if np.min(dist) <= 5.0:
+                indep_neighbors.add(resi)
+
+        # Expected neighbor residues of Arg42 within 5.0 Å: Gln40, Gln41, Leu43, Ile44, Gln49, His68, Leu69, Val70, Leu71, Arg72
+        expected_residues = {40, 41, 43, 44, 49, 68, 69, 70, 71, 72}
+        self.assertEqual(indep_neighbors, expected_residues)
+
+        # Check neighbor residue numbers reported by workflow match exactly
+        reported_resis = set(meas["neighbor_residue_numbers"])
+        self.assertEqual(reported_resis, expected_residues)
+
+        # Verify handling of nonexistent residue produces FAILED
+        rec_invalid = wf.execute_deterministic({
+            "target": "det_1ubq",
+            "mutation_str": "R999A",
+            "chain": "A",
+            "cutoff": 5.0
+        })
+        self.assertEqual(rec_invalid.state, WorkflowState.FAILED)
+
+    def test_deterministic_wf05_publication_visualization(self):
+        """WF05: Generate molecular figure and verify exported PNG, PSE, and replayable PML outputs."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF05")
+        self.assertIsNotNone(wf)
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        cmd.load(os.path.join(data_dir, "1ubq.pdb"), "det_1ubq")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rec = wf.execute_deterministic({
+                "target": "det_1ubq",
+                "preset": "publication_bright",
+                "output_dir": tmpdir
+            })
+            self.assertEqual(rec.state, WorkflowState.COMPLETED)
+            self.assertTrue(rec.validation_gates_passed)
+
+            meas = rec.scientific_measurements
+            png_path = meas["png_output"]
+            pml_path = meas["pml_script"]
+            pse_path = meas["pse_session"]
+
+            self.assertTrue(os.path.exists(png_path))
+            self.assertGreater(os.path.getsize(png_path), 500)
+
+            self.assertTrue(os.path.exists(pml_path))
+            with open(pml_path, "r") as f:
+                pml_content = f.read()
+            self.assertIn("color", pml_content.lower())
+
+            self.assertTrue(os.path.exists(pse_path))
+            self.assertGreater(os.path.getsize(pse_path), 1000)
+
+    def test_define_capability_expansion_framework(self):
+        """Test Capability expansion framework with validation and Tier X rejection."""
+        # 1. Successful capability definition
+        def sample_calc(factor: float = 2.0) -> dict:
+            return {"calculated": factor * 10.0}
+
+        cap = define_capability(
+            cap_id="custom.calc_test",
+            name="custom_calc_test",
+            api_mapping="internal.calc",
+            category="04 Quantitative Analysis",
+            description="A sample custom calculation capability.",
+            parameters={"type": "object", "properties": {"factor": {"type": "number"}}},
+            return_schema={"type": "object", "properties": {"calculated": {"type": "number"}}},
+            risk_level="Tier A (read-only)",
+            func=sample_calc
+        )
+        self.assertIsNotNone(cap)
+        res = GLOBAL_CAPABILITY_REGISTRY.execute("custom_calc_test", {"factor": 3.0})
+        self.assertTrue(res["success"])
+        self.assertEqual(res["calculated"], 30.0)
+
+        # 2. Strict rejection of Tier X (prohibited / unsafe)
+        with self.assertRaises(ValueError):
+            define_capability(
+                cap_id="dangerous.shell",
+                name="dangerous_shell",
+                api_mapping="os.system",
+                category="Dangerous",
+                description="Dangerous capability that must be rejected.",
+                parameters={"type": "object"},
+                return_schema={"type": "object"},
+                risk_level="Tier X (prohibited)",
+                func=lambda: None
+            )
+
+    def test_classify_error_categories(self):
+        """Verify deterministic error classification across different failure types."""
+        self.assertEqual(classify_error(TypeError("missing argument")), ErrorClassification.DETERMINISTIC_NON_RETRYABLE)
+        self.assertEqual(classify_error(TimeoutError("request timed out")), ErrorClassification.TRANSIENT_RETRYABLE)
+        self.assertEqual(classify_error(ConnectionError("remote host disconnected")), ErrorClassification.TRANSIENT_RETRYABLE)
+        self.assertEqual(classify_error("Precondition failed: Object does not exist"), ErrorClassification.VALIDATION_FAILURE)
+        self.assertEqual(classify_error("Tool 'system_exec' is not in the authorized tool registry"), ErrorClassification.UNAUTHORIZED_TOOL)
+        self.assertEqual(classify_error("Execution was cancelled by the user"), ErrorClassification.CANCELLED)
+
+    def test_workflow_session_state_and_validation_gates(self):
+        """Verify WorkflowSession state machine and mandatory validation gate enforcement."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF01")
+        self.assertIsNotNone(wf)
+        session = WorkflowSession(wf, {"pdb_id": "1ubq"}, intent_match_confidence=0.95)
+        self.assertEqual(session.state, WorkflowState.PENDING)
+
+        session.start()
+        self.assertEqual(session.state, WorkflowState.RUNNING)
+
+        # Record a successful tool call
+        session.record_tool_call("fetch_structure", {"pdb_id": "1ubq"}, {"success": True, "atom_count": 660, "chains": ["A"]})
+        self.assertEqual(session.state, WorkflowState.RUNNING)
+        self.assertEqual(session.scientific_measurements["atom_count"], 660)
+
+        rec = session.finalize()
+        self.assertEqual(rec.state, WorkflowState.COMPLETED)
+        self.assertTrue(rec.validation_gates_passed)
+
+        # Test failure case when mandatory gate fails
+        session_fail = WorkflowSession(wf, {"pdb_id": "1ubq"}, intent_match_confidence=0.95)
+        session_fail.start()
+        session_fail.record_tool_call("fetch_structure", {"pdb_id": "1ubq"}, {"success": False, "error": "Network timeout"})
+        rec_fail = session_fail.finalize()
+        self.assertEqual(rec_fail.state, WorkflowState.FAILED)
+        self.assertFalse(rec_fail.validation_gates_passed)
 
 
 if __name__ == "__main__":
