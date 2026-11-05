@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymol-ai-copilot"
+version = "1.0.0"
+description = "Native Agentic AI Copilot Plugin for PyMOL Open-Source"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "PyMOL AI Copilot Team" }
+]
+keywords = ["pymol", "ai", "agent", "structural-biology", "bioinformatics", "ollama"]
+dependencies = [
+    "PyQt6>=6.5.0",
+    "numpy>=1.24.0"
+]
+
+[project.entry-points."pymol.plugins"]
+pymol_ai_copilot = "pymol_ai_copilot:__init_plugin__"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pymol_ai_copilot*"]

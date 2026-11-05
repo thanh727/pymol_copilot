@@ -1,0 +1,4 @@
+# PyMOL AI Copilot Dependencies
+# Note: In PyMOL Open-Source on macOS (Homebrew), PyMOL, PyQt6, and numpy are bundled in the PyMOL environment.
+PyQt6>=6.5.0
+numpy>=1.24.0
