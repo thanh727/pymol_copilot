@@ -241,6 +241,21 @@ The test suite contains 164 automated unit, mock, and PyMOL integration tests ac
 
 ---
 
+## 🤝 Get Involved — Contributors Welcome
+
+**PyMOL AI Copilot is a community-oriented research software project, and contributions are welcome.** Whether you are a structural biologist, computational chemist, PyMOL power user, Python developer or AI engineer, there are several ways to help improve the project:
+
+- **Test scientific workflows** on real proteins, complexes and challenging structures; share reproducible results.
+- **Report bugs and usability issues**, especially scientific edge cases, OS compatibility and incorrect tool behavior.
+- **Suggest new capabilities** for analysis, visualization, validation and reproducible outputs.
+- **Improve documentation, tests and code** through focused pull requests.
+
+**How to contribute:** Start with [GitHub Issues](https://github.com/thanh727/pymol_copilot/issues) to describe a problem or propose a feature. For code changes, open a [Pull Request](https://github.com/thanh727/pymol_copilot/pulls) with a clear description, relevant tests and (where applicable) a small reproducible PyMOL example.
+
+*Scientific correctness, safe tool execution and reproducibility are core priorities. Please discuss significant architectural changes in an issue before implementation.*
+
+---
+
 ## 📄 License
 Open-Source. Distributed under the MIT License.
 
