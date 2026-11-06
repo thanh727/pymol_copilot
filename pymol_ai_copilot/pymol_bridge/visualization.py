@@ -2,7 +2,7 @@
 Publication-ready visualization presets, styling, and rendering management.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from .executor import PyMOLExecutor
 from ..analysis.contacts import resi_sort_key
 

@@ -2,9 +2,12 @@
 Structure alignment, superposition, and RMSD computation.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
+import logging
 from ..pymol_bridge.executor import PyMOLExecutor
 from .contacts import resi_sort_key
+
+logger = logging.getLogger(__name__)
 
 
 class StructureAligner:
@@ -49,6 +52,7 @@ class StructureAligner:
                         })
             return len(m_resis), pairs
         except Exception:
+            logger.warning("Could not extract matched residues from alignment object.", exc_info=True)
             return 0, []
 
     def _count_matched_residues(self, aln_obj: str, mob_sel: str, mobile: str) -> int:
@@ -64,6 +68,7 @@ class StructureAligner:
                         matched_resis.add(idx_to_resi[idx])
             return len(matched_resis)
         except Exception:
+            logger.warning("Could not count matched residues from alignment object.", exc_info=True)
             return 0
 
     def align_structures(

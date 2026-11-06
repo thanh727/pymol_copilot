@@ -5,7 +5,9 @@ Runs LLM planning in a background QThread to ensure PyMOL GUI remains 100% respo
 
 import html
 import json
+import logging
 import os
+import tempfile
 import time
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +23,62 @@ from ..agent.controller import AgentController
 from ..agent.ollama_client import OllamaClient
 from ..agent.tools import GLOBAL_CONTEXT
 from ..config import CONFIG
+
+logger = logging.getLogger(__name__)
+
+
+_TOOL_SUMMARY_KEYS = (
+    "selection", "target_selection", "object_name", "object", "atom_count",
+    "count", "residue_count", "contact_count", "candidates_count",
+    "target_count", "shown", "hidden", "color", "transparency", "oriented",
+    "zoomed", "representation", "output_path", "file_path", "saved_to",
+    "objects", "ligands", "message",
+)
+
+
+def summarize_tool_result(result: Any, max_chars: int = 320) -> str:
+    """Build a short, human-readable summary without cutting JSON in half."""
+    if not isinstance(result, dict):
+        text = str(result)
+    elif not result.get("success", True):
+        text = f"error: {result.get('error', 'unknown error')}"
+    else:
+        parts = []
+        for key in _TOOL_SUMMARY_KEYS:
+            if key not in result:
+                continue
+            value = result[key]
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, list):
+                value = f"[{len(value)} items]"
+            elif isinstance(value, dict):
+                value = f"{{{len(value)} fields}}"
+            parts.append(f"{key}={value}")
+        text = ", ".join(parts) if parts else "ok"
+
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip() + "…"
+    return text
+
+
+def _atomic_write_json(path: str, data: Dict[str, Any]) -> None:
+    """Write JSON atomically so a crash cannot leave a truncated history."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".ai_copilot_", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 class AgentWorker(QtCore.QThread):
@@ -46,6 +104,7 @@ class AgentWorker(QtCore.QThread):
             )
             self.finished_signal.emit(result)
         except Exception as e:
+            logger.exception("Agent worker failed")
             self.error_signal.emit(str(e))
 
     def _on_step(self, event: Dict[str, Any]):
@@ -93,8 +152,10 @@ class CopilotDialog(QtWidgets.QDialog):
         self.controller = AgentController(self.ollama_client, model_name=CONFIG.default_model)
         self.worker: Optional[AgentWorker] = None
         self._raw_chat_log: List[Dict[str, Any]] = []
+        self._model_capabilities: Dict[str, Dict[str, Any]] = {}
 
         self._build_ui()
+        self._restore_conversation()
         self.refresh_ollama_models()
         self.refresh_structure_context()
 
@@ -141,6 +202,7 @@ class CopilotDialog(QtWidgets.QDialog):
         self.temp_spin.setSingleStep(0.05)
         self.temp_spin.setValue(CONFIG.temperature)
         self.temp_spin.setToolTip("Lower temperature (0.0-0.2) gives more deterministic tool calls.")
+        self.temp_spin.valueChanged.connect(lambda _value: self._persist_settings())
         top_layout.addWidget(self.temp_spin)
 
         # Max steps
@@ -149,6 +211,7 @@ class CopilotDialog(QtWidgets.QDialog):
         self.steps_spin.setRange(1, 25)
         self.steps_spin.setValue(CONFIG.max_agent_steps)
         self.steps_spin.setToolTip("Maximum tool execution iterations per user request.")
+        self.steps_spin.valueChanged.connect(lambda _value: self._persist_settings())
         top_layout.addWidget(self.steps_spin)
 
         top_layout.addStretch()
@@ -289,20 +352,30 @@ class CopilotDialog(QtWidgets.QDialog):
             if not connected:
                 self.status_indicator.setStyleSheet("color: #e74c3c; font-size: 16px; font-weight: bold;")
                 self.status_label.setText("Ollama Offline")
-                self.status_label.setToolTip(f"Could not reach Ollama at {CONFIG.ollama_host}: {msg}")
+                self.status_label.setToolTip(
+                    f"Could not reach Ollama at {CONFIG.ollama_host}: {msg}\n"
+                    "Start it with `ollama serve` (or open the Ollama app)."
+                )
                 self.model_combo.clear()
+                self.btn_send.setEnabled(False)
+                self.btn_send.setToolTip(
+                    "Ollama is offline. Start it with `ollama serve`, then click ⟳."
+                )
                 return
 
             self.status_indicator.setStyleSheet("color: #2ecc71; font-size: 16px; font-weight: bold;")
             self.status_label.setText("Ollama Online")
+            self.status_label.setToolTip("Connected to Ollama")
 
             models = self.ollama_client.list_models()
             self.model_combo.blockSignals(True)
             current_sel = self.model_combo.currentText()
             self.model_combo.clear()
+            self._model_capabilities.clear()
 
             default_idx = 0
             for idx, m in enumerate(models):
+                self._model_capabilities[m["name"]] = m
                 label = f"{m['name']} ({m['parameter_size']}, {m['size_gb']}GB)"
                 self.model_combo.addItem(label, m["name"])
                 if m["name"] == CONFIG.default_model or m["name"] in current_sel:
@@ -312,20 +385,147 @@ class CopilotDialog(QtWidgets.QDialog):
                 self.model_combo.setCurrentIndex(default_idx)
                 selected_model = self.model_combo.itemData(default_idx)
                 self.controller.model_name = selected_model
-                self.status_label.setToolTip(f"Active model: {selected_model}")
+                self._update_model_warning(selected_model)
+            else:
+                self.btn_send.setEnabled(False)
+                self.btn_send.setToolTip(
+                    "No Ollama models installed. Run `ollama pull qwen2.5-coder:7b`."
+                )
+                self.status_label.setToolTip(
+                    "No models installed. Run `ollama pull qwen2.5-coder:7b`."
+                )
 
             self.model_combo.blockSignals(False)
+            if models and not (self.worker and self.worker.isRunning()):
+                self.btn_send.setEnabled(True)
+                self.btn_send.setToolTip("")
 
         except Exception as e:
             self.status_indicator.setStyleSheet("color: #e74c3c; font-size: 16px; font-weight: bold;")
             self.status_label.setText("Connection Error")
             self.status_label.setToolTip(str(e))
+            self.btn_send.setEnabled(False)
+
+    def _update_model_warning(self, model_name: str):
+        """Warn when the selected model does not advertise tool support."""
+        info = self._model_capabilities.get(model_name) or {}
+        capabilities = info.get("capabilities") or []
+        if capabilities and "tools" not in capabilities:
+            self.status_indicator.setStyleSheet("color: #d29922; font-size: 16px; font-weight: bold;")
+            self.status_label.setText("No Tool Support")
+            self.status_label.setToolTip(
+                f"Model '{model_name}' does not advertise tool calling. "
+                "The agent may narrate instead of executing. Prefer "
+                "qwen2.5-coder:7b or another tool-capable model."
+            )
+        else:
+            self.status_indicator.setStyleSheet("color: #2ecc71; font-size: 16px; font-weight: bold;")
+            self.status_label.setText("Ollama Online")
+            self.status_label.setToolTip(f"Active model: {model_name}")
 
     def _on_model_changed(self, text: str):
         model_name = self.model_combo.currentData()
         if model_name:
             self.controller.model_name = model_name
-            self.status_label.setToolTip(f"Active model: {model_name}")
+            CONFIG.default_model = model_name
+            self._persist_settings()
+            self._update_model_warning(model_name)
+
+    def _persist_settings(self):
+        """Persist the model/temperature/step settings chosen in the UI."""
+        try:
+            CONFIG.temperature = float(self.temp_spin.value())
+            CONFIG.max_agent_steps = int(self.steps_spin.value())
+            CONFIG.save()
+        except Exception:
+            logger.warning("Could not persist Copilot settings", exc_info=True)
+
+    def _restore_conversation(self):
+        """Restore the last conversation after a PyMOL restart."""
+        if not CONFIG.persist_conversation:
+            return
+        path = CONFIG.get_conversation_path()
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            logger.warning("Could not read persisted Copilot conversation", exc_info=True)
+            return
+
+        raw_messages = data.get("messages") if isinstance(data, dict) else None
+        if not isinstance(raw_messages, list):
+            return
+        messages = [
+            {"role": entry["role"], "content": entry["content"]}
+            for entry in raw_messages
+            if isinstance(entry, dict)
+            and entry.get("role") in ("user", "assistant")
+            and isinstance(entry.get("content"), str)
+            and entry["content"].strip()
+        ]
+        if not messages:
+            return
+
+        limit = int(CONFIG.max_history_messages)
+        if limit > 0:
+            messages = messages[-limit:]
+        while messages and messages[0]["role"] != "user":
+            messages.pop(0)
+        if not messages:
+            return
+
+        self.controller.conversation_history = messages
+        focus = data.get("focus") if isinstance(data, dict) else None
+        if isinstance(focus, dict):
+            self.controller._last_focus = focus
+
+        self._append_system_message(
+            f"<i>Restored {len(messages)} message(s) from the previous session. "
+            "Use <b>Clear Chat</b> to start fresh.</i>"
+        )
+        for entry in messages:
+            if entry["role"] == "user":
+                self._append_user_message(entry["content"])
+            else:
+                self._append_assistant_message(entry["content"])
+
+    def _persist_conversation(self):
+        """Save the bounded user/assistant history and follow-up focus."""
+        if not CONFIG.persist_conversation:
+            return
+        messages = list(self.controller.conversation_history)
+        limit = int(CONFIG.max_history_messages)
+        if limit > 0:
+            messages = messages[-limit:]
+        while messages and messages[0].get("role") != "user":
+            messages.pop(0)
+        payload = {
+            "version": 1,
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "messages": messages,
+            "focus": getattr(self.controller, "_last_focus", None),
+        }
+        try:
+            _atomic_write_json(CONFIG.get_conversation_path(), payload)
+        except Exception:
+            logger.warning("Could not persist Copilot conversation", exc_info=True)
+
+    @staticmethod
+    def _remove_conversation_file():
+        path = CONFIG.get_conversation_path()
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            logger.warning("Could not remove persisted Copilot conversation", exc_info=True)
+
+    def closeEvent(self, event):
+        """Flush settings and conversation when the panel is closed."""
+        self._persist_settings()
+        self._persist_conversation()
+        super().closeEvent(event)
 
     def refresh_structure_context(self):
         """Update the structure context badge with loaded PyMOL objects."""
@@ -392,11 +592,38 @@ class CopilotDialog(QtWidgets.QDialog):
             args = event.get("arguments", {})
             args_str = ", ".join(f"{k}={repr(v)}" for k, v in args.items())
             self._append_tool_call(tool_name, args_str)
+            self._raw_chat_log.append({
+                "role": "tool",
+                "time": time.strftime("%H:%M:%S"),
+                "tool": tool_name,
+                "phase": "call",
+                "content": args_str,
+            })
         elif event_type == "tool_result":
             tool_name = event.get("tool")
             res = event.get("result", {})
             self._append_tool_result(tool_name, res)
+            self._raw_chat_log.append({
+                "role": "tool",
+                "time": time.strftime("%H:%M:%S"),
+                "tool": tool_name,
+                "phase": "result",
+                "content": summarize_tool_result(res, max_chars=1000),
+            })
             self.refresh_structure_context()
+        elif event_type == "tool_retry":
+            tool_name = event.get("tool")
+            attempt = event.get("attempt")
+            self._append_status_line(
+                f"<span style='color:#9a6700;'>↻ Retrying {html.escape(str(tool_name))} "
+                f"(attempt {attempt}) after a transient error.</span>"
+            )
+        elif event_type == "execution_nudge":
+            self._append_status_line("⚙️ <i>Running the matched workflow instead of only describing it...</i>")
+        elif event_type == "failure_nudge":
+            self._append_status_line("↻ <i>Retrying with corrected arguments after a tool failure...</i>")
+        elif event_type == "truthfulness_nudge":
+            self._append_status_line("🔎 <i>No tool data yet — requiring verification before reporting results...</i>")
         elif event_type == "error":
             self._append_system_message(f"<b style='color:#cf222e;'>Error:</b> {event.get('error')}")
 
@@ -412,6 +639,7 @@ class CopilotDialog(QtWidgets.QDialog):
         dur = result.get("total_duration_seconds", 0)
         steps = result.get("steps_count", 0)
         self._append_status_line(f"<span style='color: #656d76; font-size: 11px;'>Completed in {dur}s ({steps} steps) using {result.get('model_used')}</span>")
+        self._persist_conversation()
 
     def _on_worker_error(self, error_str: str):
         self.btn_send.setEnabled(True)
@@ -456,13 +684,7 @@ class CopilotDialog(QtWidgets.QDialog):
         success = result.get("success", True)
         icon = "✓" if success else "✗"
         color = "#1a7f37" if success else "#cf222e"
-
-        # Form a concise summary
-        res_copy = dict(result)
-        res_copy.pop("success", None)
-        summary = json.dumps(res_copy, indent=1)
-        if len(summary) > 250:
-            summary = summary[:250] + "... }"
+        summary = summarize_tool_result(result)
 
         html_block = f"""
         <div style="margin: 2px 0 8px 24px; font-size: 11px; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; color: {color};">
@@ -482,6 +704,7 @@ class CopilotDialog(QtWidgets.QDialog):
     def clear_chat(self):
         self.chat_history.clear()
         self.controller.clear_conversation()
+        self._remove_conversation_file()
         self._raw_chat_log.clear()
         self._append_system_message("<i>Conversation history cleared.</i>")
 

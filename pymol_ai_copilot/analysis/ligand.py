@@ -6,13 +6,14 @@ computes minimum heavy-atom distances and geometric polar contacts, generates po
 visualizations, and exports contact tables.
 """
 
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, Optional, Set
 import os
 import json
 import csv
 import numpy as np
 
-from pymol_ai_copilot.pymol_bridge.executor import PyMOLExecutor
+from ..pymol_bridge.executor import PyMOLExecutor
+from .contacts import resi_sort_key
 
 
 # Common non-biologically-relevant ligands, solvent, crystallization additives, and buffer ions
@@ -64,7 +65,7 @@ class LigandAnalyzer:
             ligands = []
             excluded_additives = []
 
-            for resn, resi, chain in sorted(het_res, key=lambda x: (x[2], int(x[1]) if x[1].isdigit() else x[1])):
+            for resn, resi, chain in sorted(het_res, key=lambda x: (x[2], resi_sort_key(x[1]))):
                 clean_resn = resn.strip().upper()
                 sel = f"{object_name} and chain '{chain}' and resi '{resi}' and resn '{resn}'"
                 atom_count = self.cmd.count_atoms(sel)
@@ -178,7 +179,7 @@ class LigandAnalyzer:
             contacts = []
             total_polar_contacts = 0
 
-            for r_resn, r_resi, r_chain in sorted(res_tuples, key=lambda x: (x[2], int(x[1]) if x[1].isdigit() else x[1])):
+            for r_resn, r_resi, r_chain in sorted(res_tuples, key=lambda x: (x[2], resi_sort_key(x[1]))):
                 r_parts = [
                     f"model {object_name}",
                     f"chain '{r_chain}'",

@@ -3,6 +3,7 @@ Typed tool registry, JSON schemas for Ollama function calling, and execution dis
 """
 
 from dataclasses import dataclass
+import inspect
 from typing import Any, Callable, Dict, List, Optional
 from . import tools
 
@@ -63,13 +64,29 @@ class ToolRegistry:
                 "error": f"Tool '{name}' is not in the authorized tool registry. Available tools: {list(self._tools.keys())}"
             }
 
+        if not isinstance(arguments, dict):
+            return {
+                "success": False,
+                "error": f"Invalid arguments provided for tool '{name}': expected a JSON object, got {type(arguments).__name__}."
+            }
+
+        # Validate the call against the tool signature before executing it. This
+        # keeps an internal TypeError raised by the tool implementation from
+        # being misreported as a caller error.
         try:
-            # Dispatch to verified tool function
-            return tool.func(**arguments)
+            inspect.signature(tool.func).bind(**arguments)
         except TypeError as e:
             return {
                 "success": False,
                 "error": f"Invalid arguments provided for tool '{name}': {e}"
+            }
+
+        try:
+            return tool.func(**arguments)
+        except TypeError as e:
+            return {
+                "success": False,
+                "error": f"Tool execution failed for '{name}' (internal TypeError): {e}"
             }
         except Exception as e:
             return {
@@ -484,7 +501,7 @@ class ToolRegistry:
 
         self.register(ToolDefinition(
             name="find_nearby_residues",
-            description="Find all polymer residues within cutoff angstroms of a target selection (e.g. 'organic', 'resn AP5', 'resi 50').",
+            description="Find all polymer residues within cutoff angstroms of a target selection (e.g. 'organic', 'resn AP5', 'resi 50'). When the selection matches multiple independent ligands/ions, the result includes a per-instance breakdown under 'per_instance' with each target's own contacting residues.",
             parameters={
                 "type": "object",
                 "properties": {

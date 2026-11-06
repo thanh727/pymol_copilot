@@ -6,7 +6,6 @@ Tests the 3 user scenarios:
 3. "Tải về cấu trúc 1ubq và hiển thị dạng cartoon."
 """
 
-import sys
 import unittest
 
 try:

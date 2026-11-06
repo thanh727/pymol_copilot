@@ -3,7 +3,7 @@ Intermolecular and intramolecular contact analysis, distances, and binding pocke
 """
 
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from ..pymol_bridge.executor import PyMOLExecutor
 
@@ -69,6 +69,9 @@ class ContactAnalyzer:
         Measure pairwise atomic distances between two selections within cutoff.
         Correctly excludes self-contacts (d = 0.0) and avoids duplicate pair counting when selections overlap.
         """
+        selection1 = self.executor.normalize_selection(selection1)
+        selection2 = self.executor.normalize_selection(selection2)
+
         def _exec():
             c1 = self.cmd.count_atoms(selection1)
             c2 = self.cmd.count_atoms(selection2)
@@ -142,6 +145,8 @@ class ContactAnalyzer:
         Identify polymer residues within cutoff angstroms of target selection.
         Supports natural keywords like 'ligand' / 'ligands' / 'organic' and auto-resolves generic 'resn lig'.
         """
+        target_selection = self.executor.normalize_selection(target_selection)
+
         def _exec():
             norm_target = target_selection.strip()
             # Support common ligand aliases
@@ -154,27 +159,73 @@ class ContactAnalyzer:
 
             t_count = self.cmd.count_atoms(norm_target)
             if t_count == 0:
-                org_count = self.cmd.count_atoms("organic and not solvent")
-                if org_count > 0:
-                    stored_org = set()
-                    self.cmd.iterate("organic and not solvent", "stored_org.add(resn)", space={"stored_org": stored_org})
-                    raise ValueError(
-                        f"Target selection '{target_selection}' has 0 atoms. "
-                        f"Available organic ligands in session have residue names: {sorted(stored_org)}. "
-                        f"Use 'organic and not solvent' or 'resn <NAME>'."
+                stored_hetero = set()
+                self.cmd.iterate(
+                    "not polymer and not solvent",
+                    "stored_hetero.add(resn)",
+                    space={"stored_hetero": stored_hetero}
+                )
+                stored_solvent = set()
+                self.cmd.iterate("solvent", "stored_solvent.add(resn)", space={"stored_solvent": stored_solvent})
+
+                hints = []
+                if stored_hetero:
+                    hints.append(
+                        f"Available non-solvent heteroatoms/ions: {sorted(stored_hetero)}. "
+                        "Use 'resn <NAME>' with one of these names."
                     )
-                raise ValueError(f"Target selection '{target_selection}' has 0 atoms.")
+                if stored_solvent:
+                    hints.append(f"Available solvent residues: {sorted(stored_solvent)}.")
+                hint = (" " + " ".join(hints)) if hints else ""
+                raise ValueError(
+                    f"Target selection '{target_selection}' has 0 atoms.{hint}"
+                )
 
-            query = f"byres (({surrounding_scope}) within {cutoff} of ({norm_target})) and not ({norm_target})"
-            atom_count = self.cmd.count_atoms(query)
+            def _residues_near(selection: str) -> Dict[str, Any]:
+                query = f"byres (({surrounding_scope}) within {cutoff} of ({selection})) and not ({selection})"
+                atom_count = self.cmd.count_atoms(query)
+                stored = set()
+                self.cmd.iterate(query, "stored.add((chain, resi, resn))", space={"stored": stored})
+                res_list = sorted(
+                    [{"chain": r[0], "resi": str(r[1]), "resn": r[2]} for r in stored],
+                    key=lambda x: (x["chain"], resi_sort_key(x["resi"]))
+                )
+                return {
+                    "total_atoms": atom_count,
+                    "residue_count": len(res_list),
+                    "residues": res_list
+                }
 
-            stored_res = set()
-            self.cmd.iterate(query, "stored_res.add((chain, resi, resn))", space={"stored_res": stored_res})
+            combined = _residues_near(norm_target)
 
-            res_list = sorted(
-                [{"chain": r[0], "resi": str(r[1]), "resn": r[2]} for r in stored_res],
+            # Break the result down per target residue instance. This matters
+            # when a selection such as "resn SO4" matches several independent
+            # ions/ligands: each one usually contacts a different residue set.
+            target_stored = set()
+            self.cmd.iterate(
+                norm_target,
+                "target_stored.add((chain, resi, resn))",
+                space={"target_stored": target_stored}
+            )
+            target_list = sorted(
+                [{"chain": r[0], "resi": str(r[1]), "resn": r[2]} for r in target_stored],
                 key=lambda x: (x["chain"], resi_sort_key(x["resi"]))
             )
+
+            per_instance = []
+            for target in target_list[:50]:
+                parts = [f"resn '{target['resn']}'", f"resi '{target['resi']}'"]
+                if target["chain"]:
+                    parts.append(f"chain '{target['chain']}'")
+                instance_selection = " and ".join(parts)
+                near = _residues_near(instance_selection)
+                per_instance.append({
+                    "target": target,
+                    "selection": instance_selection,
+                    "total_atoms": near["total_atoms"],
+                    "residue_count": near["residue_count"],
+                    "residues": near["residues"]
+                })
 
             return {
                 "success": True,
@@ -182,9 +233,12 @@ class ContactAnalyzer:
                 "requested_target": target_selection,
                 "cutoff_angstroms": cutoff,
                 "surrounding_scope": surrounding_scope,
-                "total_atoms": atom_count,
-                "residue_count": len(res_list),
-                "residues": res_list
+                "target_count": len(target_list),
+                "targets": target_list,
+                "total_atoms": combined["total_atoms"],
+                "residue_count": combined["residue_count"],
+                "residues": combined["residues"],
+                "per_instance": per_instance
             }
 
         return self.executor.run_safe(_exec)
@@ -200,6 +254,9 @@ class ContactAnalyzer:
         Identify geometric polar contact candidates (N/O donor/acceptor pairs within cutoff).
         NOTE: These are distance-based geometric candidates, not experimentally verified hydrogen bonds.
         """
+        selection1 = self.executor.normalize_selection(selection1)
+        selection2 = self.executor.normalize_selection(selection2)
+
         def _exec():
             c1 = self.cmd.count_atoms(selection1)
             c2 = self.cmd.count_atoms(selection2)
@@ -268,6 +325,8 @@ class ContactAnalyzer:
         Comprehensive structural analysis of a ligand binding pocket.
         Automatically restricts protein search to ligand's parent structure when multiple structures are loaded.
         """
+        ligand_selection = self.executor.normalize_selection(ligand_selection)
+
         def _exec():
             lig_count = self.cmd.count_atoms(ligand_selection)
             if lig_count == 0:

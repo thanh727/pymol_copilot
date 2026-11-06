@@ -77,6 +77,7 @@ class OllamaClient:
                         "parameter_size": details.get("parameter_size", "unknown"),
                         "quantization": details.get("quantization_level", "unknown"),
                         "family": details.get("family", "unknown"),
+                        "capabilities": caps,
                         "supports_tools": "tools" in caps
                     })
                 return result
@@ -98,14 +99,16 @@ class OllamaClient:
         """
         Send a chat completion request to Ollama POST /api/chat.
         Supports native tools and returns parsed message with tool calls.
+
+        The response is consumed as a stream so that ``cancel()`` interrupts
+        generation on the next token instead of waiting for the full response.
         """
-        self.reset_cancellation()
         url = f"{self.host}/api/chat"
 
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "stream": False,
+            "stream": True,
             "options": {
                 "temperature": float(temperature)
             }
@@ -126,14 +129,49 @@ class OllamaClient:
 
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                if self._cancelled:
-                    raise OllamaClientError("Request was cancelled by user.")
+                content_parts: List[str] = []
+                thinking_parts: List[str] = []
+                native_tool_calls: List[Dict[str, Any]] = []
+                total_duration_ns = 0
 
-                raw_bytes = resp.read()
-                response_json = json.loads(raw_bytes.decode("utf-8"))
-                message = response_json.get("message", {})
+                for raw_line in resp:
+                    if self._cancelled:
+                        raise OllamaClientError("Request was cancelled by user.")
 
-                # Parse tool calls from message
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+
+                    if chunk.get("error"):
+                        raise OllamaClientError(f"Ollama reported an error: {chunk['error']}")
+
+                    message = chunk.get("message") or {}
+                    piece = message.get("content")
+                    if piece:
+                        content_parts.append(piece)
+                        if stream_callback:
+                            stream_callback(piece)
+                    thinking_piece = message.get("thinking")
+                    if thinking_piece:
+                        thinking_parts.append(thinking_piece)
+                    if message.get("tool_calls"):
+                        native_tool_calls.extend(message["tool_calls"])
+                    if chunk.get("total_duration"):
+                        total_duration_ns = chunk["total_duration"]
+
+                message: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "".join(content_parts),
+                    "thinking": "".join(thinking_parts)
+                }
+                if native_tool_calls:
+                    message["tool_calls"] = native_tool_calls
+
+                # Parse tool calls from the aggregated message
                 tool_calls = self._extract_tool_calls(message)
 
                 return {
@@ -141,9 +179,20 @@ class OllamaClient:
                     "content": message.get("content", ""),
                     "thinking": message.get("thinking", ""),
                     "tool_calls": tool_calls,
-                    "total_duration_ms": round(response_json.get("total_duration", 0) / 1e6, 2)
+                    "total_duration_ms": round(total_duration_ns / 1e6, 2)
                 }
 
+        except OllamaClientError:
+            raise
+        except urllib.error.HTTPError as e:
+            if self._cancelled:
+                raise OllamaClientError("Request cancelled.") from e
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "replace")[:500]
+            except Exception:
+                pass
+            raise OllamaClientError(f"Ollama HTTP {e.code}: {detail or e.reason}") from e
         except urllib.error.URLError as e:
             if self._cancelled:
                 raise OllamaClientError("Request cancelled.") from e

@@ -16,6 +16,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..pymol_bridge.version import get_pymol_version
+
 
 class WorkflowState(str, Enum):
     """Execution states for scientific workflows."""
@@ -150,6 +152,9 @@ class WorkflowDefinition:
             f"**Resolved Entities:** `{entities_str}`\n"
             f"**Recommended Execution Plan:**\n{step_lines}\n"
             f"**Scientific Caveats & Provenance Requirements:**\n{limits}\n"
+            f"**Execution Mode: ACTIVE.** Execute this workflow now by calling the "
+            f"authorized tools. Do not restate this plan, do not list the steps back "
+            f"to the user, and do not ask which step to run.\n"
         )
 
     def execute_deterministic(
@@ -172,7 +177,7 @@ class WorkflowDefinition:
             state=WorkflowState.PENDING,
             input_parameters=dict(inputs),
             scientific_caveats=list(self.scientific_limitations),
-            reproducibility={"pymol_version": "3.1.0", "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            reproducibility={"pymol_version": get_pymol_version(), "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         )
 
         record.state = WorkflowState.RUNNING
@@ -237,8 +242,8 @@ class WorkflowDefinition:
                 record.state = WorkflowState.RUNNING
                 t0 = time.time()
                 res_show = reg.execute("show_representation", {"representation": "cartoon", "selection": target_name})
-                res_col = reg.execute("color_selection", {"color": "secondary_structure", "selection": target_name})
-                res_orient = reg.execute("orient_selection", {"selection": target_name})
+                reg.execute("color_selection", {"color": "secondary_structure", "selection": target_name})
+                reg.execute("orient_selection", {"selection": target_name})
                 d_style = round((time.time() - t0) * 1000, 2)
 
                 step3 = WorkflowStepExecution(
@@ -284,8 +289,8 @@ class WorkflowDefinition:
                 record.state = WorkflowState.VALIDATING
                 t0 = time.time()
                 res_info = reg.execute("get_object_info", {"object_name": target})
-                res_chains = reg.execute("get_chains", {"object_name": target})
-                res_sum = reg.execute("get_structure_summary", {})
+                reg.execute("get_chains", {"object_name": target})
+                reg.execute("get_structure_summary", {})
                 d_inspect = round((time.time() - t0) * 1000, 2)
 
                 step2 = WorkflowStepExecution(2, "Extract Macro-Statistics & Ligands", "get_object_info", StepState.COMPLETED, {"object_name": target}, res_info, d_inspect)
@@ -489,8 +494,8 @@ class WorkflowDefinition:
                     "chain_resolution_note": chain_resolution_note,
                     "mobile": mobile,
                     "target": target,
-                    "mobile_chain": eff_mob_chain,
-                    "target_chain": eff_tgt_chain,
+                    "mobile_chain": eff_mob_chain if comparison_scope == "single_chain" else "all",
+                    "target_chain": eff_tgt_chain if comparison_scope == "single_chain" else "all",
                     "rmsd_global_ca": rmsd_global_ca,
                     "rmsd_refined_ca": rmsd_refined_ca,
                     "rmsd_refined_all_atom": rmsd_refined_all_atom,
@@ -502,17 +507,11 @@ class WorkflowDefinition:
                     "matched_residues": matched_residues,
                     "residue_correspondence_count": res_align.get("residue_correspondence_count", 0),
                     "rmsd_units": "Å",
-                    "mobile_chain": eff_mob_chain if comparison_scope == "single_chain" else "all",
-                    "target_chain": eff_tgt_chain if comparison_scope == "single_chain" else "all",
                     "chains_detected": {"mobile": mob_chains, "target": tgt_chains},
                     "fitting_method": method,
                     "atom_selection": "name CA",
                     "rmsd_angstrom": rmsd_global_ca if comparison_scope == "single_chain" else res_rmsd.get("rmsd", rmsd_global_ca),
-                    "rmsd_global_ca": rmsd_global_ca,
-                    "rmsd_refined_core": rmsd_refined_core,
                     "aligned_atoms": res_align.get("aligned_atoms", res_rmsd.get("atoms_compared", 0)),
-                    "total_initial_atoms": res_align.get("total_initial_atoms", 0),
-                    "matched_residues": matched_residues,
                     "outlier_rejection_cycles": res_align.get("cycles", 0),
                     "divergent_residues_count": res_comp.get("deviating_residues_count", 0),
                     "max_displacement_angstrom": res_comp.get("max_displacement", 0.0),
@@ -631,8 +630,8 @@ class WorkflowDefinition:
                 record.state = WorkflowState.RUNNING
                 t0 = time.time()
                 res_pre = reg.execute("apply_visualization_preset", {"preset_name": preset_name})
-                res_bg = reg.execute("set_background", {"color": "white"})
-                res_orient = reg.execute("orient_selection", {"selection": "all"})
+                reg.execute("set_background", {"color": "white"})
+                reg.execute("orient_selection", {"selection": "all"})
                 d_style = round((time.time() - t0) * 1000, 2)
 
                 step1 = WorkflowStepExecution(1, "Apply Publication Preset & Framing", "apply_visualization_preset",
@@ -1113,7 +1112,11 @@ class WorkflowSession:
                 elif self.workflow.workflow_id == "WF05":
                     gates_passed = "export_png" in executed_caps or "apply_visualization_preset" in executed_caps
                 elif self.workflow.workflow_id == "WF06":
-                    gates_passed = "analyze_ligand_interactions" in executed_caps or "identify_ligands" in executed_caps
+                    gates_passed = (
+                        "analyze_ligand_interactions" in executed_caps
+                        or "identify_ligands" in executed_caps
+                        or "visualize_ligand_pocket" in executed_caps
+                    )
                 elif self.workflow.workflow_id == "WF07":
                     gates_passed = "calculate_sasa" in executed_caps or "map_sasa_to_structure" in executed_caps
                 elif self.workflow.workflow_id == "WF08":
@@ -1145,7 +1148,7 @@ class WorkflowSession:
             intent_match_confidence=self.intent_match_confidence,
             scientific_caveats=list(self.workflow.scientific_limitations),
             is_single_structure_inspection=(self.workflow.workflow_id == "WF04"),
-            reproducibility={"pymol_version": "3.1.0", "duration_seconds": round(time.time() - self.start_time, 2)},
+            reproducibility={"pymol_version": get_pymol_version(), "duration_seconds": round(time.time() - self.start_time, 2)},
             error=error_msg
         )
 
@@ -1159,10 +1162,14 @@ class EntityExtractor:
         text = user_text.strip()
 
         # 1. PDB Accession / AlphaFold ID
-        # Match standard 4-char PDB ID or AF- accession
+        # Match standard 4-char PDB ID or AF- accession. A bare residue number
+        # such as "residue 100A" also matches the 4-character shape, so exclude
+        # candidates immediately preceded by residue keywords.
         pdb_match = re.search(r"\b([0-9][a-zA-Z0-9]{3})\b", text)
         if pdb_match:
-            entities["pdb_id"] = pdb_match.group(1).lower()
+            prefix = text[:pdb_match.start()]
+            if not re.search(r"(?:resi|residue|resn)\s*$", prefix, re.IGNORECASE):
+                entities["pdb_id"] = pdb_match.group(1).lower()
         af_match = re.search(r"\b(af-[a-zA-Z0-9]+-f\d+)\b", text, re.IGNORECASE)
         if af_match:
             entities["pdb_id"] = af_match.group(1).lower()
@@ -1197,7 +1204,19 @@ class EntityExtractor:
             entities["chain"] = chain_match.group(1).upper()
 
         # 5. Distance cutoff (e.g. 5 A, 5.0 angstroms, 3.5 Å)
-        dist_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:angstroms?|angstrom|Å|a\b)", text, re.IGNORECASE)
+        # Require either an explicit unit or whitespace before a bare "A" so
+        # mutation strings such as "R42A" are not parsed as 42 angstroms.
+        dist_match = re.search(
+            r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*(?:angstroms?|angstrom|Å)\b",
+            text,
+            re.IGNORECASE
+        )
+        if not dist_match:
+            dist_match = re.search(
+                r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s+[aA]\b",
+                text,
+                re.IGNORECASE
+            )
         if dist_match:
             entities["cutoff"] = float(dist_match.group(1))
 
@@ -1241,6 +1260,34 @@ class WorkflowRegistry:
     and validates step-by-step scientific outcomes.
     """
 
+    _DEFINITION_PATTERNS = (
+        re.compile(
+            r"^\s*(?:what|who)\s+(?:is|are|does|do)\s+(?:an?\s+|the\s+)?"
+            r"[a-z0-9_\-]+(?:\s+[a-z0-9_\-]+)?\s*(?:mean|stand for)?\s*\??\s*$",
+            re.IGNORECASE
+        ),
+        re.compile(r"^\s*(?:what\s+does|what\s+do)\b.*\bmean\b", re.IGNORECASE),
+        re.compile(r"^\s*(?:define|explain)\b", re.IGNORECASE),
+        re.compile(r"\b(?:là gì|nghĩa là gì|định nghĩa|giải thích)\b", re.IGNORECASE),
+    )
+    _WORKFLOW_ACTION_TERMS = (
+        "fetch", "download", "load", "open", "align", "superimpose", "compare",
+        "calculate", "compute", "measure", "analyze", "analyse", "inspect",
+        "identify", "find", "detect", "predict", "visualize", "visualise", "show",
+        "display", "render", "export", "save", "select", "highlight", "batch",
+        "process", "run", "tải", "mở", "căn chỉnh", "chồng khớp", "so sánh",
+        "tính", "đo", "phân tích", "kiểm tra", "xác định", "tìm", "dự đoán",
+        "hiển thị", "vẽ", "xuất", "lưu", "chọn", "đánh dấu", "chạy", "xử lý"
+    )
+
+    @classmethod
+    def _is_conceptual_question(cls, text: str) -> bool:
+        """Detect definition/explanation questions that need no PyMOL action."""
+        if not any(pattern.search(text) for pattern in cls._DEFINITION_PATTERNS):
+            return False
+        lowered = text.lower()
+        return not any(term in lowered for term in cls._WORKFLOW_ACTION_TERMS)
+
     def __init__(self):
         self._workflows: Dict[str, WorkflowDefinition] = {}
         self._register_reference_workflows()
@@ -1268,6 +1315,9 @@ class WorkflowRegistry:
         entities = EntityExtractor.extract_entities(user_instruction, session_objects)
         text_lower = user_instruction.lower().strip()
 
+        if self._is_conceptual_question(user_instruction):
+            return None, entities, 0.0
+
         best_wf: Optional[WorkflowDefinition] = None
         best_score = 0.0
 
@@ -1290,7 +1340,13 @@ class WorkflowRegistry:
                 # If user mentions a PDB ID and fetch/download intent
                 score += 0.3
             elif wf.workflow_id == "WF03" and (session_objects and len(session_objects) >= 2 or len(entities.get("referenced_objects", [])) >= 2):
-                if any(w in text_lower for w in ["compare", "so sánh", "align", "căn chỉnh", "rmsd"]):
+                has_rmsd_action = any(
+                    w in text_lower for w in [
+                        "compare", "so sánh", "align", "căn chỉnh", "superimpose",
+                        "superpose", "calculate", "tính", "measure", "đo"
+                    ]
+                ) or ("rmsd" in text_lower and "between" in text_lower)
+                if has_rmsd_action:
                     score += 0.4
             elif wf.workflow_id == "WF04" and "mutation" in entities:
                 # Do not prioritize WF04 if user explicitly requests comparison between WT and mutant

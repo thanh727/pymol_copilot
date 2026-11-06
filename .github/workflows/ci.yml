@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PyMOL environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: pymol
+          create-args: >-
+            python=3.11
+            pymol-open-source
+            pyqt
+            numpy
+            pytest
+            ruff
+
+      - name: Lint production code
+        shell: bash -l {0}
+        run: ruff check pymol_ai_copilot --exclude tests
+
+      - name: Run tests
+        shell: bash -l {0}
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -e
+          for f in pymol_ai_copilot/tests/test_*.py; do
+            echo "::group::$f"
+            pytest -q "$f"
+            echo "::endgroup::"
+          done

@@ -11,11 +11,9 @@ from typing import Dict, Any, List, Optional
 import os
 import json
 import csv
-import time
-import numpy as np
 
-from pymol_ai_copilot.pymol_bridge.executor import PyMOLExecutor
-from pymol_ai_copilot.analysis.alignment import StructureAligner
+from ..pymol_bridge.executor import PyMOLExecutor
+from .alignment import StructureAligner
 
 
 class BatchStructureAnalyzer:
@@ -69,36 +67,46 @@ class BatchStructureAnalyzer:
             ]
 
             results = []
+            failures = []
             for i, mob in enumerate(mobiles):
                 color_name = palette_colors[i % len(palette_colors)]
 
-                # Execute individual alignment
-                aln_res = self.aligner.align_structures(
-                    mobile=mob,
-                    target=ref,
-                    method=method,
-                    mobile_chain=chain,
-                    target_chain=chain,
-                    cycles=5,
-                    cutoff=2.0
-                )
+                try:
+                    # Execute individual alignment
+                    aln_res = self.aligner.align_structures(
+                        mobile=mob,
+                        target=ref,
+                        method=method,
+                        mobile_chain=chain,
+                        target_chain=chain,
+                        cycles=5,
+                        cutoff=2.0
+                    )
 
-                # Color the mobile structure distinctly
-                self.cmd.color(color_name, f"model {mob}")
+                    # Color the mobile structure distinctly
+                    self.cmd.color(color_name, f"model {mob}")
 
-                results.append({
-                    "structure": mob,
-                    "reference": ref,
-                    "chain": chain,
-                    "method": method,
-                    "rmsd_global_ca": aln_res.get("rmsd_global_ca"),
-                    "rmsd_refined_ca": aln_res.get("rmsd_refined_ca"),
-                    "rmsd_refined_all_atom": aln_res.get("rmsd_refined_all_atom"),
-                    "aligned_ca_atoms": aln_res.get("aligned_ca_atoms"),
-                    "refined_ca_atoms": aln_res.get("refined_ca_atoms"),
-                    "matched_residues": aln_res.get("matched_residues"),
-                    "color_assigned": color_name
-                })
+                    results.append({
+                        "structure": mob,
+                        "reference": ref,
+                        "chain": chain,
+                        "method": method,
+                        "rmsd_global_ca": aln_res.get("rmsd_global_ca"),
+                        "rmsd_refined_ca": aln_res.get("rmsd_refined_ca"),
+                        "rmsd_refined_all_atom": aln_res.get("rmsd_refined_all_atom"),
+                        "aligned_ca_atoms": aln_res.get("aligned_ca_atoms"),
+                        "refined_ca_atoms": aln_res.get("refined_ca_atoms"),
+                        "matched_residues": aln_res.get("matched_residues"),
+                        "color_assigned": color_name
+                    })
+                except Exception as e:
+                    # One incompatible/failed structure must not abort the whole batch.
+                    failures.append({
+                        "structure": mob,
+                        "reference": ref,
+                        "error": str(e)
+                    })
+                    continue
 
             # Color reference structure neutral white/gray
             self.cmd.color("gray80", f"model {ref}")
@@ -113,7 +121,7 @@ class BatchStructureAnalyzer:
                 # 1. JSON
                 json_path = os.path.join(output_dir, "batch_comparison.json")
                 with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump({"reference": ref, "results": results}, f, indent=2)
+                    json.dump({"reference": ref, "results": results, "failed_structures": failures}, f, indent=2)
                 exported_files["json"] = json_path
 
                 # 2. CSV
@@ -150,6 +158,8 @@ class BatchStructureAnalyzer:
                 "total_structures_analyzed": len(valid_structures),
                 "comparisons_count": len(results),
                 "results": results,
+                "failed_structures": failures,
+                "partial_failure": bool(failures),
                 "exported_files": exported_files,
                 "scientific_limitation": (
                     "Batch structural alignment provides consistent rigid-body pairwise superposition against "

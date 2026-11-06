@@ -104,6 +104,21 @@ class TestStructureLoadingAndErrorRecovery(unittest.TestCase):
         self.assertIn("restricted", res["error"].lower())
 
     @unittest.skipUnless(PYMOL_AVAILABLE, "PyMOL required")
+    def test_load_structure_rejects_symlink_to_sensitive_path(self):
+        """A symlink with a .pdb name must not bypass the sensitive-path check."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link = os.path.join(tmpdir, "innocent.pdb")
+            try:
+                os.symlink("/etc/passwd", link)
+            except (OSError, NotImplementedError):
+                self.skipTest("Symlinks are not available on this platform.")
+
+            res = GLOBAL_REGISTRY.execute("load_structure", {"file_path": link})
+
+            self.assertFalse(res["success"])
+            self.assertIn("restricted", res["error"].lower())
+
+    @unittest.skipUnless(PYMOL_AVAILABLE, "PyMOL required")
     def test_load_structure_unexpected_extension(self):
         """Verify rejection of non-molecular file types."""
         with tempfile.NamedTemporaryFile(suffix=".sh") as tmp:

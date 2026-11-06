@@ -7,13 +7,13 @@ maximum accessibility references (Tien et al., 2013).
 Supports per-residue breakdown, B-factor mapping, surface coloring, and cross-structure comparisons.
 """
 
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional
 import os
 import json
 import csv
-import numpy as np
 
-from pymol_ai_copilot.pymol_bridge.executor import PyMOLExecutor
+from ..pymol_bridge.executor import PyMOLExecutor
+from .contacts import resi_sort_key
 
 
 # Empirical theoretical maximum accessible surface area (MaxSASA in Å²)
@@ -96,7 +96,7 @@ class SASAAnalyzer:
             # Sort residues naturally by chain, then resi
             sorted_keys = sorted(
                 res_areas.keys(),
-                key=lambda x: (x[0], int(x[1]) if x[1].isdigit() else x[1])
+                key=lambda x: (x[0], resi_sort_key(x[1]))
             )
 
             for chain, resi, resn in sorted_keys:
@@ -217,7 +217,7 @@ class SASAAnalyzer:
             res_map1 = {r["residue_number"]: r for r in sasa1.get("residues", [])}
             res_map2 = {r["residue_number"]: r for r in sasa2.get("residues", [])}
 
-            common_resis = sorted(set(res_map1.keys()) & set(res_map2.keys()), key=lambda x: int(x) if x.isdigit() else x)
+            common_resis = sorted(set(res_map1.keys()) & set(res_map2.keys()), key=resi_sort_key)
 
             comparisons = []
             large_changes = []

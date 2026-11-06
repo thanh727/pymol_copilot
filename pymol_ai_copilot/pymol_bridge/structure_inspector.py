@@ -2,7 +2,7 @@
 Inspection of loaded PyMOL structures, chains, residues, ligands, and selections.
 """
 
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 from .executor import PyMOLExecutor
 from ..analysis.contacts import resi_sort_key
 
@@ -19,10 +19,30 @@ class StructureInspector:
     def cmd(self):
         return self.executor.cmd
 
+    def _is_molecular_object(self, name: str) -> bool:
+        """Return True only for molecular objects.
+
+        ``get_names("objects")`` also returns measurement objects created by the
+        PyMOL ``distance`` command. Those objects cannot be used in atom
+        selections, so treating them as structures makes every later query fail
+        with ``Invalid selection name``.
+        """
+        try:
+            return self.cmd.get_type(name) == "object:molecule"
+        except Exception:
+            try:
+                self.cmd.count_atoms(name)
+                return True
+            except Exception:
+                return False
+
     def get_loaded_objects(self) -> List[str]:
         """Return list of loaded molecular object names."""
         def _exec():
-            return self.cmd.get_names("objects")
+            return [
+                name for name in self.cmd.get_names("objects")
+                if self._is_molecular_object(name)
+            ]
         return self.executor.run_safe(_exec)
 
     def get_object_info(self, object_name: str) -> Dict[str, Any]:
@@ -30,6 +50,16 @@ class StructureInspector:
         def _exec():
             if object_name not in self.cmd.get_names("all"):
                 raise ValueError(f"Object or selection '{object_name}' does not exist.")
+
+            try:
+                obj_type = self.cmd.get_type(object_name)
+            except Exception:
+                obj_type = ""
+            if obj_type and obj_type != "object:molecule":
+                raise ValueError(
+                    f"'{object_name}' is not a molecular object "
+                    f"(PyMOL type: {obj_type})."
+                )
 
             total_atoms = self.cmd.count_atoms(object_name)
             protein_atoms = self.cmd.count_atoms(f"({object_name}) and polymer.protein")
@@ -40,12 +70,23 @@ class StructureInspector:
 
             chains = self.cmd.get_chains(object_name)
 
-            # Get ligands
+            # Get ligands (organic)
             ligand_res = []
             if ligand_atoms > 0:
                 stored_ligands = set()
                 self.cmd.iterate(f"({object_name}) and organic", "stored_ligands.add((resn, resi, chain))", space={"stored_ligands": stored_ligands})
                 ligand_res = [{"resn": r[0], "resi": r[1], "chain": r[2]} for r in sorted(stored_ligands)]
+
+            # Get all non-polymer, non-solvent heteroatoms including inorganic ions
+            hetero_res = []
+            if total_atoms > 0:
+                stored_hetero = set()
+                self.cmd.iterate(
+                    f"({object_name}) and not polymer and not solvent",
+                    "stored_hetero.add((resn, resi, chain))",
+                    space={"stored_hetero": stored_hetero}
+                )
+                hetero_res = [{"resn": r[0], "resi": r[1], "chain": r[2]} for r in sorted(stored_hetero)]
 
             # Bounding box
             if total_atoms > 0:
@@ -69,6 +110,7 @@ class StructureInspector:
                 "ion_atoms": ion_atoms,
                 "chains": chains,
                 "ligands": sorted(ligand_res, key=lambda x: (x["chain"], resi_sort_key(x["resi"]))),
+                "heteroatoms": sorted(hetero_res, key=lambda x: (x["chain"], resi_sort_key(x["resi"]))),
                 "bounding_box_angstroms": box_dims,
                 "min_coords": min_c,
                 "max_coords": max_c
@@ -79,7 +121,13 @@ class StructureInspector:
     def get_chains(self, object_name: Optional[str] = None) -> Dict[str, List[str]]:
         """Return a mapping of objects to their chains."""
         def _exec():
-            objs = [object_name] if object_name else self.cmd.get_names("objects")
+            if object_name:
+                objs = [object_name]
+            else:
+                objs = [
+                    name for name in self.cmd.get_names("objects")
+                    if self._is_molecular_object(name)
+                ]
             result = {}
             for obj in objs:
                 result[obj] = self.cmd.get_chains(obj)
@@ -118,6 +166,8 @@ class StructureInspector:
 
     def get_selection_info(self, selection: str) -> Dict[str, Any]:
         """Return information about an arbitrary selection."""
+        selection = self.executor.normalize_selection(selection)
+
         def _exec():
             atom_count = self.cmd.count_atoms(selection)
             if atom_count == 0:
@@ -147,6 +197,8 @@ class StructureInspector:
 
     def count_atoms(self, selection: str = "all") -> int:
         """Count atoms in a selection."""
+        selection = self.executor.normalize_selection(selection)
+
         def _exec():
             return int(self.cmd.count_atoms(selection))
         return self.executor.run_safe(_exec)
@@ -157,7 +209,10 @@ class StructureInspector:
         Suitable for feeding into LLM context window.
         """
         def _exec():
-            objects = self.cmd.get_names("objects")
+            objects = [
+                name for name in self.cmd.get_names("objects")
+                if self._is_molecular_object(name)
+            ]
             selections = self.cmd.get_names("selections")
 
             obj_summaries = []
@@ -185,8 +240,17 @@ class StructureInspector:
                 chains_str = ", ".join(obj["chains"]) if obj["chains"] else "none"
                 ligands_str = ""
                 if obj["ligands"]:
-                    ligands_str = "; Ligands: " + ", ".join([f"{l['resn']} ({l['resi']}:{l['chain']})" for l in obj["ligands"][:5]])
-                lines.append(f"  • '{obj['name']}': {obj['total_atoms']} atoms, Chains: [{chains_str}]{ligands_str}")
+                    ligands_str = "; Ligands: " + ", ".join([f"{lig['resn']} ({lig['resi']}:{lig['chain']})" for lig in obj["ligands"][:5]])
+                hetero = obj.get("heteroatoms") or []
+                hetero_str = ""
+                if hetero:
+                    hetero_str = "; Heteroatoms/ions: " + ", ".join(
+                        f"{h['resn']} ({h['resi']}:{h['chain']})" for h in hetero[:10]
+                    )
+                lines.append(
+                    f"  • '{obj['name']}': {obj['total_atoms']} atoms, Chains: [{chains_str}]"
+                    f"{ligands_str}{hetero_str}"
+                )
 
             if summary["named_selections"]:
                 lines.append("  Active selections: " + ", ".join(summary["named_selections"]))

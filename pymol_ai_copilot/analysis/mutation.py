@@ -3,7 +3,7 @@ Mutation parsing, sequence position verification, neighborhood contact analysis,
 """
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 import numpy as np
 from ..pymol_bridge.executor import PyMOLExecutor
 from .contacts import resi_sort_key
@@ -286,9 +286,9 @@ class MutationAnalyzer:
                 wt_nbr_resis = {r[0] for r in wt_nbrs}
                 mut_nbr_resis = {r[0] for r in mut_nbrs}
 
-                common_nbrs = sorted(wt_nbr_resis & mut_nbr_resis, key=lambda x: int(x) if x.isdigit() else x)
-                lost_nbrs = sorted(wt_nbr_resis - mut_nbr_resis, key=lambda x: int(x) if x.isdigit() else x)
-                gained_nbrs = sorted(mut_nbr_resis - wt_nbr_resis, key=lambda x: int(x) if x.isdigit() else x)
+                common_nbrs = sorted(wt_nbr_resis & mut_nbr_resis, key=resi_sort_key)
+                lost_nbrs = sorted(wt_nbr_resis - mut_nbr_resis, key=resi_sort_key)
+                gained_nbrs = sorted(mut_nbr_resis - wt_nbr_resis, key=resi_sort_key)
 
                 # Compute mean neighbor C-alpha displacement
                 nbr_displacements = []

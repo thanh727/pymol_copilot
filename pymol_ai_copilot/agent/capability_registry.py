@@ -11,12 +11,16 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+import inspect
 import json
+import logging
 import os
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import tools
+
+logger = logging.getLogger(__name__)
 
 
 class ErrorClassification(str, Enum):
@@ -104,6 +108,7 @@ class CapabilityRegistry:
         self._capabilities: Dict[str, Capability] = {}
         self._name_to_id: Dict[str, str] = {}
         self._register_implemented_tools()
+        self.sync_with_tool_registry()
 
         # Optionally import discovered API inventory to catalog unreviewed/blocked entries
         inv_file = inventory_path or os.path.join(
@@ -117,6 +122,27 @@ class CapabilityRegistry:
         """Register a capability into the catalog."""
         self._capabilities[cap.id] = cap
         self._name_to_id[cap.name] = cap.id
+
+    def sync_with_tool_registry(self, registry: Optional[Any] = None) -> int:
+        """
+        Keep capability metadata aligned with the executable ToolRegistry.
+
+        The ToolRegistry is the single source of truth for the JSON schemas that
+        are actually sent to the model and bound to tool callables. Capability
+        metadata is documentation/audit material, so it must not drift.
+        """
+        from .tool_registry import GLOBAL_REGISTRY
+
+        tool_registry = registry or GLOBAL_REGISTRY
+        synced = 0
+        for cap in self._capabilities.values():
+            tool = tool_registry.get(cap.name)
+            if tool is None:
+                continue
+            cap.parameters = tool.parameters
+            cap.description = tool.description
+            synced += 1
+        return synced
 
     def get(self, id_or_name: str) -> Optional[Capability]:
         """Retrieve capability by canonical ID or LLM tool name."""
@@ -280,6 +306,14 @@ class CapabilityRegistry:
 
         # 2. Execute underlying verified adapter
         try:
+            inspect.signature(cap.func).bind(**norm_args)
+        except TypeError as e:
+            return {
+                "success": False,
+                "error": f"Invalid arguments provided for capability '{cap.name}': {e}"
+            }
+
+        try:
             res = cap.func(**norm_args)
             if not isinstance(res, dict):
                 res = {"success": True, "result": res}
@@ -288,7 +322,7 @@ class CapabilityRegistry:
         except TypeError as e:
             return {
                 "success": False,
-                "error": f"Invalid arguments provided for capability '{cap.name}': {e}"
+                "error": f"Capability execution failed for '{cap.name}' (internal TypeError): {e}"
             }
         except Exception as e:
             return {
@@ -363,7 +397,7 @@ class CapabilityRegistry:
                 )
                 self._capabilities[cap.id] = cap
         except Exception:
-            pass  # Non-fatal if inventory is absent or malformed
+            logger.warning("Could not load PyMOL API inventory from %s.", inventory_json_path, exc_info=True)
 
     def _register_implemented_tools(self) -> None:
         """Register the 35 verified, typed, and tested Copilot tools."""

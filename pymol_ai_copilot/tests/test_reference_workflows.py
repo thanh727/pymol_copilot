@@ -24,7 +24,6 @@ except Exception:
 
 from pymol_ai_copilot.agent.capability_registry import (
     GLOBAL_CAPABILITY_REGISTRY,
-    CapabilityRegistry,
     ErrorClassification,
     classify_error,
     define_capability,
@@ -34,7 +33,6 @@ from pymol_ai_copilot.agent.workflow_engine import (
     GLOBAL_WORKFLOW_REGISTRY,
     WorkflowSession,
     WorkflowState,
-    StepState,
 )
 
 
@@ -103,7 +101,7 @@ class TestReferenceWorkflows(unittest.TestCase):
         self.assertGreater(res_info["ligand_atoms"], 0)
 
         # Step 3: Enumerate ligands
-        ligand_names = {l["resn"] for l in res_info["ligands"]}
+        ligand_names = {lig["resn"] for lig in res_info["ligands"]}
         self.assertIn("AP5", ligand_names)
 
         # Step 4: Summary overview
@@ -589,9 +587,14 @@ class TestReferenceWorkflows(unittest.TestCase):
             func=sample_calc
         )
         self.assertIsNotNone(cap)
-        res = GLOBAL_CAPABILITY_REGISTRY.execute("custom_calc_test", {"factor": 3.0})
-        self.assertTrue(res["success"])
-        self.assertEqual(res["calculated"], 30.0)
+        try:
+            res = GLOBAL_CAPABILITY_REGISTRY.execute("custom_calc_test", {"factor": 3.0})
+            self.assertTrue(res["success"])
+            self.assertEqual(res["calculated"], 30.0)
+        finally:
+            # Keep the global registry clean for other tests in the same process.
+            GLOBAL_CAPABILITY_REGISTRY._capabilities.pop(cap.id, None)
+            GLOBAL_CAPABILITY_REGISTRY._name_to_id.pop(cap.name, None)
 
         # 2. Strict rejection of Tier X (prohibited / unsafe)
         with self.assertRaises(ValueError):

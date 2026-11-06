@@ -3,8 +3,8 @@ Tests for CapabilityRegistry, WorkflowRegistry, EntityExtractor, and context-dep
 """
 
 import unittest
-from pymol_ai_copilot.agent.capability_registry import GLOBAL_CAPABILITY_REGISTRY, Capability
-from pymol_ai_copilot.agent.workflow_engine import GLOBAL_WORKFLOW_REGISTRY, EntityExtractor
+from pymol_ai_copilot.agent.capability_registry import GLOBAL_CAPABILITY_REGISTRY
+from pymol_ai_copilot.agent.workflow_engine import GLOBAL_WORKFLOW_REGISTRY, EntityExtractor, WorkflowSession, WorkflowState
 
 
 class TestCapabilityAndWorkflowEngine(unittest.TestCase):
@@ -134,6 +134,66 @@ class TestCapabilityAndWorkflowEngine(unittest.TestCase):
         self.assertEqual(wf.workflow_id, "WF05")
         self.assertIn("export_png", wf.required_capabilities)
         self.assertIn("set_background", wf.required_capabilities)
+
+    def test_conceptual_questions_do_not_match_workflows(self):
+        """Definition questions must not force tool-scoped workflow execution."""
+        for question in (
+            "What does RMSD mean?",
+            "What is SASA?",
+            "What is a binding pocket?",
+            "SASA là gì?",
+            "Giải thích binding pocket là gì?"
+        ):
+            wf, _, conf = GLOBAL_WORKFLOW_REGISTRY.match_workflow(
+                question, session_objects=["1ake", "4ake"]
+            )
+            self.assertIsNone(wf, msg=question)
+            self.assertEqual(conf, 0.0, msg=question)
+
+    def test_rmsd_between_structures_still_matches_wf03(self):
+        """A concrete RMSD request must still select the comparison workflow."""
+        wf, _, _ = GLOBAL_WORKFLOW_REGISTRY.match_workflow(
+            "What is the RMSD between 1AKE and 4AKE?",
+            session_objects=["1ake", "4ake"]
+        )
+        self.assertIsNotNone(wf)
+        self.assertEqual(wf.workflow_id, "WF03")
+
+    # --- Entity extraction regression tests ---
+
+    def test_mutation_string_is_not_parsed_as_cutoff(self):
+        ent = EntityExtractor.extract_entities("Compare R42A mutant with wildtype")
+        self.assertEqual(ent.get("mutation"), "R42A")
+        self.assertNotIn("cutoff", ent)
+
+    def test_residue_number_is_not_parsed_as_pdb_id(self):
+        ent = EntityExtractor.extract_entities("Show SASA for residue 100A")
+        self.assertEqual(ent.get("resi"), "100A")
+        self.assertNotIn("pdb_id", ent)
+
+    def test_explicit_cutoff_still_parsed(self):
+        ent = EntityExtractor.extract_entities("Find residues within 5.0 angstroms")
+        self.assertEqual(ent.get("cutoff"), 5.0)
+
+        ent_short = EntityExtractor.extract_entities("Find residues within 5 A")
+        self.assertEqual(ent_short.get("cutoff"), 5.0)
+
+    def test_wf06_visualization_only_request_completes(self):
+        """A user who asks only to visualize the pocket should not get a failed workflow."""
+        wf = GLOBAL_WORKFLOW_REGISTRY.get("WF06")
+        session = WorkflowSession(wf, {}, intent_match_confidence=0.65)
+        session.start()
+        session.record_tool_call(
+            "visualize_ligand_pocket",
+            {"object_name": "1ake", "ligand_resn": "AP5"},
+            {"success": True, "contacting_residues": 12},
+            5.0
+        )
+
+        record = session.finalize()
+
+        self.assertEqual(record.state, WorkflowState.COMPLETED)
+        self.assertTrue(record.validation_gates_passed)
 
 
 if __name__ == "__main__":

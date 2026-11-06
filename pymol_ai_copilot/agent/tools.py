@@ -5,7 +5,8 @@ Concrete tool implementations for PyMOL structure inspection, manipulation, anal
 import csv
 import json
 import os
-from typing import Any, Dict, List, Optional, Union
+import tempfile
+from typing import Any, Dict, List, Optional
 
 from ..analysis.alignment import StructureAligner
 from ..analysis.contacts import ContactAnalyzer
@@ -36,6 +37,65 @@ class ToolContext:
 
 
 GLOBAL_CONTEXT = ToolContext()
+
+
+# ============================================================================
+# Export path sandbox
+# ============================================================================
+
+def _allowed_export_roots() -> List[str]:
+    """Return the real paths exports are permitted to be written under."""
+    candidates = [CONFIG.export_dir, tempfile.gettempdir()]
+    candidates.extend(getattr(CONFIG, "additional_export_dirs", []) or [])
+    roots: List[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            root = os.path.realpath(os.path.expanduser(str(candidate)))
+        except (OSError, ValueError):
+            continue
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _is_within(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _resolve_export_path(filename: str, suffix: str = "") -> str:
+    """Resolve an export path and refuse writes outside the allowed roots.
+
+    Relative paths are anchored to ``CONFIG.export_dir``. Symlinks are resolved
+    before the containment check so a link cannot escape the sandbox.
+    """
+    if not isinstance(filename, str) or not filename.strip():
+        raise ValueError("An export path is required.")
+
+    raw = os.path.expanduser(filename.strip())
+    path = raw if os.path.isabs(raw) else os.path.join(CONFIG.export_dir, raw)
+    if suffix and not path.lower().endswith(suffix.lower()):
+        path += suffix
+
+    if os.path.exists(path) or os.path.islink(path):
+        resolved = os.path.realpath(path)
+    else:
+        parent = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+        resolved = os.path.join(parent, os.path.basename(path))
+
+    roots = _allowed_export_roots()
+    if not any(_is_within(resolved, root) for root in roots):
+        raise PermissionError(
+            "Refusing to write outside the allowed export directories. "
+            f"Requested: '{resolved}'. Allowed roots: {roots}. "
+            "Set 'export_dir' or 'additional_export_dirs' in the Copilot "
+            "configuration to authorize another location."
+        )
+    return resolved
 
 
 # ============================================================================
@@ -204,6 +264,7 @@ def tool_highlight_residues(selection: str = "", residues: Optional[Any] = None,
                 selection = residues
         if not selection:
             selection = "all"
+        selection = GLOBAL_CONTEXT.executor.normalize_selection(selection)
         GLOBAL_CONTEXT.executor.show_representation(representation, selection)
         GLOBAL_CONTEXT.executor.color_selection(color, selection)
         return {"success": True, "highlighted": selection, "representation": representation, "color": color}
@@ -212,8 +273,17 @@ def tool_highlight_residues(selection: str = "", residues: Optional[Any] = None,
 
 
 def tool_label_residues(selection: str = "", label_type: str = "resn_resi", label: Optional[str] = None, residues: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
-    """Label residues with identifier text (resn_resi, resi, or custom)."""
+    """Label residues with a fixed, allow-listed label style."""
+    allowed_types = {"resn_resi", "resi", "clear"}
     effective_type = label if label is not None else label_type
+    if not isinstance(effective_type, str) or effective_type not in allowed_types:
+        return {
+            "success": False,
+            "error": (
+                f"Unsupported label_type {effective_type!r}. "
+                f"Allowed values: {sorted(allowed_types)}."
+            )
+        }
     try:
         if not selection and residues:
             if isinstance(residues, list):
@@ -233,8 +303,10 @@ def tool_label_residues(selection: str = "", label_type: str = "resn_resi", labe
                 selection = residues
         if not selection:
             selection = kwargs.get("target") or kwargs.get("target_selection") or "all"
+        selection = GLOBAL_CONTEXT.executor.normalize_selection(selection)
 
         def _exec():
+            GLOBAL_CONTEXT.executor.validate_selection(selection)
             if effective_type == "resn_resi":
                 GLOBAL_CONTEXT.executor.cmd.label(selection, '"%s%s" % (resn, resi)')
             elif effective_type == "resi":
@@ -242,7 +314,7 @@ def tool_label_residues(selection: str = "", label_type: str = "resn_resi", labe
             elif effective_type == "clear":
                 GLOBAL_CONTEXT.executor.cmd.label(selection, '""')
             else:
-                GLOBAL_CONTEXT.executor.cmd.label(selection, f'"{effective_type}"')
+                raise ValueError(f"Unsupported label_type: {effective_type!r}")
 
         GLOBAL_CONTEXT.executor.run_safe(_exec)
         return {"success": True, "labeled_selection": selection, "label_type": effective_type}
@@ -402,7 +474,12 @@ def tool_identify_mutations(
 ) -> Dict[str, Any]:
     """Compare wildtype and mutant structures, calculating global alignment and local Cα displacement."""
     try:
-        res = GLOBAL_CONTEXT.mutations.compare_wildtype_and_mutant(wildtype_object, mutant_object, chain, resi)
+        res = GLOBAL_CONTEXT.mutations.compare_wildtype_and_mutant(
+            wildtype_object=wildtype_object,
+            mutant_object=mutant_object,
+            mutation_str=resi or "",
+            chain=chain
+        )
         res["success"] = True
         return res
     except Exception as e:
@@ -502,9 +579,7 @@ def tool_export_png(
 ) -> Dict[str, Any]:
     """Export a high-resolution PNG image of the current view."""
     try:
-        path = filename if os.path.isabs(filename) else os.path.join(CONFIG.export_dir, filename)
-        if not path.lower().endswith(".png"):
-            path += ".png"
+        path = _resolve_export_path(filename, suffix=".png")
         saved = GLOBAL_CONTEXT.executor.export_image(path, width, height, dpi, ray)
         return {
             "success": True,
@@ -520,7 +595,7 @@ def tool_export_png(
 def tool_save_session(filename: str) -> Dict[str, Any]:
     """Save the current PyMOL session to a .pse file."""
     try:
-        path = filename if os.path.isabs(filename) else os.path.join(CONFIG.export_dir, filename)
+        path = _resolve_export_path(filename)
         saved = GLOBAL_CONTEXT.executor.save_session(path)
         return {"success": True, "filepath": saved}
     except Exception as e:
@@ -530,9 +605,7 @@ def tool_save_session(filename: str) -> Dict[str, Any]:
 def tool_export_pml(filename: str) -> Dict[str, Any]:
     """Export all executed PyMOL commands as a reproducible .pml script."""
     try:
-        path = filename if os.path.isabs(filename) else os.path.join(CONFIG.export_dir, filename)
-        if not path.lower().endswith(".pml"):
-            path += ".pml"
+        path = _resolve_export_path(filename, suffix=".pml")
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         script = GLOBAL_CONTEXT.executor.get_pml_script()
         with open(path, "w", encoding="utf-8") as f:
@@ -545,9 +618,7 @@ def tool_export_pml(filename: str) -> Dict[str, Any]:
 def tool_export_analysis_json(filename: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """Export structural analysis results to a JSON file."""
     try:
-        path = filename if os.path.isabs(filename) else os.path.join(CONFIG.export_dir, filename)
-        if not path.lower().endswith(".json"):
-            path += ".json"
+        path = _resolve_export_path(filename, suffix=".json")
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -559,9 +630,7 @@ def tool_export_analysis_json(filename: str, data: Dict[str, Any]) -> Dict[str, 
 def tool_export_analysis_csv(filename: str, rows: List[Dict[str, Any]], headers: Optional[List[str]] = None) -> Dict[str, Any]:
     """Export tabular analysis results to a CSV file."""
     try:
-        path = filename if os.path.isabs(filename) else os.path.join(CONFIG.export_dir, filename)
-        if not path.lower().endswith(".csv"):
-            path += ".csv"
+        path = _resolve_export_path(filename, suffix=".csv")
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         if not rows:
             return {"success": False, "error": "No rows provided for CSV export."}
@@ -657,7 +726,10 @@ def tool_export_ligand_contacts(
             ligand_resi=ligand_resi,
             cutoff=float(cutoff)
         )
-        path = output_path if os.path.isabs(output_path) else os.path.join(CONFIG.export_dir, output_path)
+        path = _resolve_export_path(
+            output_path,
+            suffix=".csv" if str(format).lower().strip() == "csv" else ".json"
+        )
         res = GLOBAL_CONTEXT.ligand.export_contacts_table(analysis, path, format)
         res["success"] = True
         return res
@@ -741,7 +813,10 @@ def tool_export_sasa_table(
     """Calculate and export residue SASA / RSA table to a JSON or CSV file."""
     try:
         sasa_data = GLOBAL_CONTEXT.sasa.calculate_sasa(object_name, selection, probe_radius)
-        path = output_path if os.path.isabs(output_path) else os.path.join(CONFIG.export_dir, output_path)
+        path = _resolve_export_path(
+            output_path,
+            suffix=".csv" if str(format).lower().strip() == "csv" else ".json"
+        )
         res = GLOBAL_CONTEXT.sasa.export_sasa_table(sasa_data, path, format)
         res["success"] = True
         return res
@@ -836,7 +911,7 @@ def tool_batch_compare_structures(
         else:
             names = list(structure_names)
 
-        out_d = output_dir if (not output_dir or os.path.isabs(output_dir)) else os.path.join(CONFIG.export_dir, output_dir)
+        out_d = _resolve_export_path(output_dir) if output_dir else ""
         res = GLOBAL_CONTEXT.batch.batch_compare_structures(
             structure_names=names,
             reference_name=reference_name,
@@ -844,7 +919,23 @@ def tool_batch_compare_structures(
             method=method,
             output_dir=out_d
         )
-        res["success"] = True
+        if res.get("results"):
+            res["success"] = True
+            if res.get("failed_structures"):
+                res["warning"] = (
+                    f"{len(res['failed_structures'])} of {res.get('total_structures_analyzed', 0)} "
+                    "structures could not be compared; see 'failed_structures' for details."
+                )
+        else:
+            errors = "; ".join(
+                f"{item.get('structure')}: {item.get('error')}"
+                for item in res.get("failed_structures", [])
+            )
+            res["success"] = False
+            res["error"] = (
+                "Batch comparison produced no successful alignments."
+                + (f" Failures: {errors}" if errors else "")
+            )
         return res
     except Exception as e:
         return {"success": False, "error": str(e)}

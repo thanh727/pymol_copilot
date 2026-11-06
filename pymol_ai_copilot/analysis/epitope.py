@@ -6,15 +6,12 @@ Resolves residue numbering offsets and chain assignments, computes surface acces
 quantifies spatial clustering and 3D compactness, and provides publication-grade visualizations.
 """
 
-from typing import Dict, Any, List, Optional, Tuple, Set
-import os
-import json
-import csv
+from typing import Dict, Any, List, Optional
 import re
 import numpy as np
 
-from pymol_ai_copilot.pymol_bridge.executor import PyMOLExecutor
-from pymol_ai_copilot.analysis.sasa import SASAAnalyzer, TIEN_MAX_SASA
+from ..pymol_bridge.executor import PyMOLExecutor
+from .sasa import SASAAnalyzer
 
 
 AA3_TO_1: Dict[str, str] = {
@@ -66,7 +63,6 @@ class EpitopeMapper:
             if clean_seq:
                 matched_chain = None
                 matched_resis = []
-                matched_pos = -1
 
                 for ch in target_chains:
                     # Extract sequence for chain
@@ -81,7 +77,6 @@ class EpitopeMapper:
                     pos = ch_seq.find(clean_seq)
                     if pos != -1:
                         matched_chain = ch
-                        matched_pos = pos
                         matched_resis = [res_tuples[i][0] for i in range(pos, pos + len(clean_seq))]
                         break
 

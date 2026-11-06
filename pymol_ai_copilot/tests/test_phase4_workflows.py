@@ -33,7 +33,6 @@ except Exception:
 from pymol_ai_copilot.agent.capability_registry import GLOBAL_CAPABILITY_REGISTRY
 from pymol_ai_copilot.agent.workflow_engine import (
     GLOBAL_WORKFLOW_REGISTRY,
-    EntityExtractor,
     WorkflowState
 )
 
@@ -369,6 +368,21 @@ class TestPhase4AdvancedWorkflows(unittest.TestCase):
         self.assertTrue(rec.validation_gates_passed)
         meas = rec.scientific_measurements
         self.assertEqual(meas["comparisons_count"], 1)
+
+    def test_identify_mutations_with_residue_parameter(self):
+        """Regression: identify_mutations must pass chain/resi to the correct keyword arguments."""
+        res = GLOBAL_CAPABILITY_REGISTRY.execute("identify_mutations", {
+            "wildtype_object": "p4_1ubq",
+            "mutant_object": "p4_r42a",
+            "chain": "A",
+            "resi": "42"
+        })
+        self.assertTrue(res["success"])
+        local = res["local_mutation_comparison"]
+        self.assertIsNotNone(local)
+        self.assertEqual(local["wildtype_residue"], "ARG")
+        self.assertEqual(local["mutant_residue"], "ALA")
+        self.assertAlmostEqual(local["ca_displacement_angstrom"], 0.0, delta=0.001)
 
     # ========================================================================
     # Task 7: Natural Language Intent Matching & Entity Extraction

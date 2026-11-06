@@ -206,7 +206,7 @@ One-click and natural language presets:
 
 ## 🧪 Testing & Verification
 
-The test suite contains 100+ automated unit, mock, and PyMOL integration tests across 11 test suites:
+The test suite contains 164 automated unit, mock, and PyMOL integration tests across 13 test suites:
 
 ```bash
 # Run all tests using PyMOL's Python interpreter
