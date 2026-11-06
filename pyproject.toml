@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,9 +7,11 @@ name = "pymol-ai-copilot"
 version = "1.0.0"
 description = "Native Agentic AI Copilot Plugin for PyMOL Open-Source"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [
-    { name = "PyMOL AI Copilot Team" }
+    { name = "Thanh Trung Nguyen" }
 ]
 keywords = ["pymol", "ai", "agent", "structural-biology", "bioinformatics", "ollama"]
 dependencies = [

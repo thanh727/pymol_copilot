@@ -256,6 +256,21 @@ The test suite contains 164 automated unit, mock, and PyMOL integration tests ac
 
 ---
 
-## 📄 License
-Open-Source. Distributed under the MIT License.
+## 📄 License and acknowledgements
+
+The original **PyMOL AI Copilot** code is made available under the
+[MIT License](LICENSE), with copyright retained by its respective authors.
+Copyright (c) 2026 Thanh Trung Nguyen.
+
+The MIT License permits modification, redistribution and commercial use
+provided its copyright and license notice is preserved. **It does not
+require downstream forks to remain open source.**
+
+PyMOL, PyQt6, NumPy, Ollama, LLM weights and example PDB coordinates are
+subject to their own terms. See [Third-Party Notices](THIRD_PARTY_NOTICES.md),
+particularly the **GPLv3 / commercial** licensing of PyQt6.
+
+Contributions are welcome under the project's MIT terms; please read
+[Contributing](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CONDUCT.md)
+and the [Security Policy](SECURITY.md).
 
